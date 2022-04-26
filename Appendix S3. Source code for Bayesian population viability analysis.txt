@@ -1,0 +1,2123 @@
+#Appendix S3. Source code for Bayesian population viability analysis.
+library(runjags)
+library(coda)
+#-----------------------------------------------------------------------------------------
+#Specify Bayesian Population Viability Analysis for JAGS
+#------------------------------------------------------------------------------------------
+sink("bpva.jags")
+cat("
+model {
+
+#-------------------------------------------------  
+# 1. Prior for all demographic parameters
+#-------------------------------------------------
+#1.1 MEAN ##
+mu.r~dnorm(0,0.01)I(-10,10)      #Survival for released individuals
+mu.w~dnorm(0,0.01)I(-10,10)      #Survival for wild-hatched individuals
+mu.p~dnorm(0,0.01)I(-10,10)      #Resight probability for released individuals
+mu.pw~dnorm(0,0.01)I(-10,10)     #Resight probability for wild-hatched individuals
+mu.rs~dnorm(0,0.01)I(-10,10)     #Reproductive success rate
+mu.f~dunif(0,1.386)              #Number of fledgeling (from 1 to 4 on log scale for moment-matching)
+mu.sr~dnorm(0,0.01)I(-10,10)     #Sex ratio of fledgeling
+
+#-------------------------------------------------  
+#1.2 COEFFICIENTS OF COVARIATES ##
+#Only significant coefficients were included.
+alpha1[1]<-0                     #Survival for newly released individuals was set 0 for reference
+alpha1[2]~dnorm(0,0.01)I(-10,10) #Survival for previously released individuals
+alpha2[1]<-0                     #Seasonal different survival for Spring was set 0 for reference
+alpha2[2]~dnorm(0,0.01)I(-10,10) #For summer
+alpha2[3]~dnorm(0,0.01)I(-10,10) #For autumn
+alpha2[4]~dnorm(0,0.01)I(-10,10) #For winter
+alpha3[1]<-0                     #Survival for wild-hatched juveniles was set 0 for reference
+alpha3[2]~dnorm(0,0.01)I(-10,10) #Survival for wild-hatched adults
+alpha5[1]<-0                     #Attribute specific reproductive success rate for released-released pair was set 0 for reference
+alpha5[2]~dnorm(0,0.01)I(-10,10) #For released-wild pair
+alpha5[3]~dnorm(0,0.01)I(-10,10) #For wild-wild pair
+
+#Density dependence
+#Non-significant variables were set 0
+beta1[1,1]~dnorm(0,0.01)I(-10,10) #Spring survival for newly released individuals
+beta1[1,2]<-0
+beta1[1,3]~dnorm(0,0.01)I(-10,10) #Autumn survival for newly released individuals
+beta1[1,4]<-0
+beta1[2,1]~dnorm(0,0.01)I(-10,10) #Spring survival for previously released individuals
+beta1[2,2]<-0
+beta1[2,3]<-0
+beta1[2,4]<-0
+beta2[1,1]<-0
+beta2[1,2]<-0
+beta2[1,3]<-0
+beta2[1,4]~dnorm(0,0.01)I(-10,10) #Winter survival for wild-hatched juveniles
+beta2[2,1]<-0
+beta2[2,2]<-0
+beta2[2,3]<-0
+beta2[2,4]~dnorm(0,0.01)I(-10,10)  #Winter survival for wild-hatched adults
+beta3[1]~dnorm(0,0.01)I(-10,10)    #Reproductive success rate for released-released pair
+beta3[2]<-0
+beta3[3]<-0
+beta5~dnorm(0,0.01)I(-10,10)       #Resight probability
+beta6~dnorm(0,0.01)I(-10,10)       #Resight probability
+#-------------------------------------------------  
+#1.3 RANDOM EFFECTS ##
+for(i in 1:2){
+for(s in 1:(4*sim.occasions)){
+epsilon.r[i,s]~dnorm(0,tau.r)    #Random effect for newly and previously released individuals
+epsilon.w[i,s]~dnorm(0,tau.w)    #Random effect for wild-hatched juveniles and adults
+ }
+}
+for(s in 1:(4*sim.occasions)){
+epsilon.p[s]~dnorm(0,tau.p)      #Resight probability for released individuals
+epsilon.pw[s]~dnorm(0,tau.pw)    #Resight probability for wild-hatched individuals
+}
+for(i in 1:3){
+for(t in 1:sim.occasions){
+epsilon.rs[i,t]~dnorm(0,tau.rs)  #Reproductive success rate for three attribute of pairs
+ }
+}
+
+for(t in 1:sim.occasions){
+epsilon.sr[t]~dnorm(0,tau.sr)    #Sex ratio of fledgelings
+}
+sig.r~ dunif(0,10)
+tau.r<-1/(sig.r*sig.r)
+sig.w~ dunif(0,10)
+tau.w<-1/(sig.w*sig.w)
+sig.p ~ dunif(0,10)
+tau.p <-1/(sig.p*sig.p)
+sig.pw ~ dunif(0,10)
+tau.pw <-1/(sig.pw*sig.pw)
+sig.rs~dunif(0,10)
+tau.rs<-1/(sig.rs*sig.rs)
+sig.sr~dunif(0,10)
+tau.sr<-1/(sig.sr*sig.sr)
+
+#-------------------------------------------------  
+# 2. Derived parameters
+#-------------------------------------------------
+# 2.1 SURVIVAL RATE ##
+#Class,age, category, and season specific survival
+#phi.r1: survival rate of newly released individuals
+#phi.r2: survival rate of previously released individuals
+#phi.wj: survival rate of wild-hatched juveniles
+#phi.wad: survival rate of wild-hatched adults
+#N2: standardized population size
+for(s in 1:(4*sim.occasions)){
+logit(phi.r1[s])<- mu.r+beta1[1,season[s]]*N2[s]+alpha2[season[s]]+epsilon.r[1,s]
+logit(phi.r2[s])<- mu.r+beta1[2,season[s]]*N2[s]+alpha1[2]+alpha2[season[s]]+epsilon.r[2,s]
+logit(phi.wj[s])<- mu.w+beta2[1,season[s]]*N2[s]+epsilon.w[1,s]
+logit(phi.wad[s])<-mu.w+beta2[2,season[s]]*N2[s]+alpha3[2]+epsilon.w[2,s]
+}
+
+#Seasonal survival: changing names just for easy understand
+for(t in 1:sim.occasions){
+phi.r1.spring[t]<-phi.r1[t*4-3]
+phi.r1.summer[t]<-phi.r1[t*4-2]
+phi.r1.autumn[t]<-phi.r1[t*4-1]
+phi.r1.winter[t]<-phi.r1[t*4]
+phi.r2.spring[t]<-phi.r2[t*4-3]
+phi.r2.summer[t]<-phi.r2[t*4-2]
+phi.r2.autumn[t]<-phi.r2[t*4-1]
+phi.r2.winter[t]<-phi.r2[t*4]
+phi.wj.spring[t]<-phi.wj[t*4-3]
+phi.wj.summer[t]<-phi.wj[t*4-2]
+phi.wj.autumn[t]<-phi.wj[t*4-1]
+phi.wj.winter[t]<-phi.wj[t*4]
+phi.wad.spring[t]<-phi.wad[t*4-3]
+phi.wad.summer[t]<-phi.wad[t*4-2]
+phi.wad.autumn[t]<-phi.wad[t*4-1]
+phi.wad.winter[t]<-phi.wad[t*4]
+}
+
+#Annual survival
+for(t in 1:(sim.occasions-1)){
+a.phi.r1[t]<-phi.r1.spring[t]*phi.r1.summer[t]*phi.r1.autumn[t]*phi.r1.winter[t]
+a.phi.r2[t]<- phi.r2.spring[t]*phi.r2.summer[t]*phi.r2.autumn[t]*phi.r2.winter[t]
+a.phi.wj[t]<-phi.wj.spring[t]*phi.wj.summer[t]*phi.wj.autumn[t]*phi.wj.winter[t]
+a.phi.wad[t]<- phi.wad.spring[t]*phi.wad.summer[t]*phi.wad.autumn[t]*phi.wad.winter[t]
+}
+
+#-------------------------------------------------  
+# 2.2 REPRODUCTION ##
+#Reproductive success rate
+for(i in 1:n.data){
+logit(rs[i])<-mu.rs+beta3[pair[i]]*N.june[year[i]]+alpha5[pair[i]]+epsilon.rs[pair[i],year[i]]
+}
+
+#Attributes specific reproductive success rate
+for(t in 1:sim.occasions){
+logit(rs.rr[t])<-mu.rs+beta3[1]*N.june[t]+alpha5[1]+epsilon.rs[1,t]
+logit(rs.rw[t])<-mu.rs+alpha5[2]+epsilon.rs[2,t]
+logit(rs.ww[t])<-mu.rs+alpha5[3]+epsilon.rs[3,t]
+}
+
+#Number of fledgeling in successful nest
+for(i in 1:n.data){
+omega[i]<-1/4*exp(mu.f)
+}
+
+#Attributes specific number of fledgeling in successful nest
+for(t in 1:sim.occasions){
+f[t]<- exp(mu.f)
+}
+
+#-------------------------------------------------  
+# 2.3 SEX RATIO ##
+#Fledgelings ##
+for(t in 1:sim.occasions){
+logit(sr[t])<-mu.sr+epsilon.sr[t]
+}
+
+#-------------------------------------------------  
+# 2.4 PROPORTION OF RELEASED INDIVIDUALS ##
+for (t in 1:sim.occasions){
+rho.m[t]<-Nprm.june[t]/(Nprm.june[t]+Nwmad.june[t]+0.00000001)
+rho.f[t]<-Nprf.june[t]/(Nprf.june[t]+Nwfad.june[t]+0.00000001)
+}
+
+#-------------------------------------------------  
+# 2.5 STANDARDIZED POPULATION SIZE ##
+#Mean(182.876) and sd (167.061) was obtained from the IPM without density effect
+#Every three month
+N2[4]<-(Ntot.dec[1]-182.876)/167.061
+N2[3]<-(Ntot.spt[1]-182.876)/167.061
+N2[2]<-(-182.876)/167.061
+N2[1]<-(-182.876)/167.061
+for(t in 2:sim.occasions){
+N2[t*4]<-(Ntot.dec[t]-182.876)/167.061
+N2[t*4-1]<-(Ntot.spt[t]-182.876)/167.061
+N2[t*4-2]<-(N.june[t]-182.876)/167.061
+N2[t*4-3]<-(Ntot.mar[t]-182.876)/167.061
+}
+#Every June
+for (t in 1:sim.occasions){
+N.june[t]<-(Nrelease.june[t]+Nwmy.june[t]+Nwmad.june[t]+Nwfy.june[t]+Nwfad.june[t]-182.876)/167.061
+}
+
+#-------------------------------------------------  
+# 3. LIKELIHOO AND OBSERVATION PROCESS
+#-------------------------------------------------
+# 3.1 CJS MODEL MODEFIED KERY & SCHAUB (2011)##
+#CJS for released individuals
+for (i in 1:nind){
+for(s in o[i]:(n.season-1)){
+logit(phi.r[i,s])<-mu.r+beta1[class[i,s],season[s]]*N2[s]+alpha1[class[i,s]]+alpha2[season[s]]+epsilon.r[class[i,s],s]
+ }
+}
+for (i in 1:nind){
+z[i,o[i]]<-1
+for (s in (o[i]+1):n.season){
+z[i,s]~dbern(mu.r1[i,s])
+mu.r1[i,s]<-phi.r[i,s-1]*z[i,s-1]
+y[i,s]~dbern(mu.r2[i,s])
+mu.r2[i,s]<-p[s-1]*z[i,s]
+ }
+}
+for(s in 1:(n.season-1)){
+logit(p[s])<-mu.p+beta5*N2[s]+epsilon.p[s]
+}
+#CJS for wild-hatched individuals
+for (i in 1:nind.w){
+for(s in ow[i]:(n.season-1)){
+logit(phi.w[i,s])<-mu.w+beta2[age.w[i,s],season[s]]*N2[s]+alpha3[age.w[i,s]]+epsilon.w[age.w[i,s],s]
+ }
+}
+for (i in 1:nind.w){
+zw[i,ow[i]]<-1
+for (s in (ow[i]+1):n.season){
+zw[i,s]~dbern(mu.w1[i,s])
+mu.w1[i,s]<-phi.w[i,s-1]*zw[i,s-1]
+yw[i,s]~dbern(mu.w2[i,s])
+mu.w2[i,s]<-pw[s-1]*zw[i,s]
+ }
+}
+for(s in 1:(n.season-1)){
+logit(pw[s])<-mu.pw+beta6*N2[s]+epsilon.pw[s]
+}
+#-------------------------------------------------  
+# 3.2 REPRODUCTIVE SUCCESS ##
+for(i in 1:n.data){
+success[i]~dbern(rs[i])
+}
+
+#-------------------------------------------------  
+# 3.3 NUMBER OF FLEDGELINGS IN SUCCESSFUL NESTS ##
+for(i in 1:n.data){
+C.fl[i]~dbinom(omega[i],4)T(1,)
+}
+
+#-------------------------------------------------  
+# 3.4 SEX RATIO OF FLEDGELINGS ##
+for(i in 1:nind.w){
+sex.w[i]~dbern(sr[yr[i]])
+}
+
+#-------------------------------------------------  
+# 3.5 ROOST COUNT ##
+for(t in 1:(n.occasions-1)){
+Cspt[t]~dpois(Ntot.spt1[t])
+}
+
+#-------------------------------------------------  
+# 4. SENARIO I. No additional release
+#-------------------------------------------------
+# 4.1 MARCH ##
+#The first release was in September 2008,thus number of individuals set 0 in March 2008. 
+Nnrm.mar1[1]<-0
+Nnrm.mar2[1]<-0
+Nnrm.mar3[1]<-0
+Nnrm.mar[1]<-0
+Nprm.mar[1]<-0
+Nnrf.mar1[1]<-0
+Nnrf.mar2[1]<-0
+Nnrf.mar3[1]<-0
+Nnrf.mar[1]<-0
+Nprf.mar[1]<-0
+Nwmj.mar[1]<-0
+Nwmy.mar[1]<-0
+Nwmad.mar[1]<-0
+Nwfj.mar[1]<-0
+Nwfy.mar[1]<-0
+Nwfad.mar[1]<-0
+
+#Population size change with mortality from December to March
+for (t in 2:sim.occasions){
+Nnrm.mar1[t]~dbin(phi.r1.winter[t-1],Nnrm.dec1[t-1])   #Newly released males released in previous June
+Nnrm.mar2[t]~dbin(phi.r1.winter[t-1],Nnrm.dec2[t-1])   #Newly released males released in previous September
+Nnrm.mar3[t]~dbin(phi.r1.winter[t-1],Nnrm.dec3[t-1])   #Newly released males released in previous March
+Nnrm.mar[t]<-Nnrm.mar1[t]+Nnrm.mar2[t]+Nnrm.mar3[t]
+
+Nprm.mar[t]~dbin(phi.r2.winter[t-1],Nprm.dec[t-1])     #Previously released males
+Nnrf.mar1[t]~dbin(phi.r1.winter[t-1],Nnrf.dec1[t-1])   #Newly released females released in previous June
+Nnrf.mar2[t]~dbin(phi.r1.winter[t-1],Nnrf.dec2[t-1])   #Newly released females released in previous September
+Nnrf.mar3[t]~dbin(phi.r1.winter[t-1],Nnrf.dec3[t-1])   #Newly released females released in previous March
+Nnrf.mar[t]<-Nnrf.mar1[t]+Nnrf.mar2[t]+Nnrf.mar3[t]
+
+Nprf.mar[t]~dbin(phi.r2.winter[t-1],Nprf.dec[t-1])     #Previously released females
+Nwmj.mar[t]~dbin(phi.wj.winter[t-1],Nwmj.dec[t-1])     #Wild-hatched juvenile males
+Nwmy.mar[t]~dbin(phi.wad.winter[t-1],Nwmy.dec[t-1])    #Wild-hatched yearling males
+Nwmad.mar[t]~dbin(phi.wad.winter[t-1],Nwmad.dec[t-1])  #Wild-hatched adult males
+
+Nwfj.mar[t]~dbin(phi.wj.winter[t-1],Nwfj.dec[t-1])     #Wild-hatched juvenile females
+Nwfy.mar[t]~dbin(phi.wad.winter[t-1],Nwfy.dec[t-1])    #Wild-hatched yearling females
+Nwfad.mar[t]~dbin(phi.wad.winter[t-1],Nwfad.dec[t-1])  #Wild-hatched adult females
+}
+
+#Calcurate population size with new release in March
+for (t in 2:sim.occasions){
+Ntot.mar[t]<-Nrelease.mar[t]+Nwild.mar[t]
+Nrelease.mar[t]<-Nprf.mar[t]+Nprm.mar[t]+Nnrf.mar[t]+Nnrm.mar[t]+Rf1.mar[t]+Rm1.mar[t]
+Nwild.mar[t]<-Nwmj.mar[t]+Nwmy.mar[t]+Nwmad.mar[t]+Nwfj.mar[t]+Nwfy.mar[t]+Nwfad.mar[t]
+}
+
+#-------------------------------------------------  
+# 4.2 JUNE ##
+#Reproduction
+#Number of pairs set 0 in 2008 and 2009. This is because there was no Crested Ibis in June 2008 and no breeding activity was observed in 2009. 
+Nrr[1]<-0
+Nrw[1]<-0
+Nww[1]<-0
+Nrr[2]<-0
+Nrw[2]<-0
+Nww[2]<-0
+
+#Pair formation
+for (t in 3:sim.occasions){
+Nrr[t]<-rho.m[t]*Nprf.june[t]                               #Number of released-released pair
+Nrw[t]<-rho.m[t]* Nwfad.june[t]+(1-rho.m[t])*Nprf.june[t]   #Number of released-wild pair
+Nww[t]<-(1-rho.m[t])* Nwfad.june[t]                          #Number of wild-wild pair
+}
+
+#Fledge
+for(t in 1:sim.occasions){
+lambda.m[t]<-(Nrr[t]*rs.rr[t]*f[t]+Nrw[t]*rs.rw[t]*f[t]+Nww[t]*rs.ww[t]*f[t])*sr[t]
+lambda.f[t]<-(Nrr[t]*rs.rr[t]*f[t]+Nrw[t]*rs.rw[t]*f[t]+Nww[t]*rs.ww[t]*f[t])*(1-sr[t])
+Nwmj.june[t]~dpois(lambda.m[t])
+Nwfj.june[t]~dpois(lambda.f[t])
+Nwj.june[t]<- Nwmj.june[t]+Nwfj.june[t]
+}
+
+#Population size change with mortality from March to June
+for (t in 1:sim.occasions){
+Nnrm.june[t]~dbin(phi.r1.spring[t],Rm1.mar[t])         #Newly released males released in March
+Nprm.june1[t]~dbin(phi.r1.spring[t],Nnrm.mar1[t])      #Previously released males released in previous June
+Nprm.june2[t]~dbin(phi.r1.spring[t],Nnrm.mar2[t])      #Previously released males released in previous September
+Nprm.june3[t]~dbin(phi.r2.spring[t],Nnrm.mar3[t])      #Previously released males released in previous March
+Nprm.june4[t]~dbin(phi.r2.spring[t],Nprm.mar[t])       #Previously released males
+Nprm.june[t]<-Nprm.june1[t]+Nprm.june2[t]+Nprm.june3[t]+Nprm.june4[t]
+
+Nnrf.june[t]~dbin(phi.r1.spring[t],Rf1.mar[t])         #Newly released males released in March
+Nprf.june1[t]~dbin(phi.r1.spring[t],Nnrf.mar1[t])      #Previously released females released in previous June
+Nprf.june2[t]~dbin(phi.r1.spring[t],Nnrf.mar2[t])      #Previously released females released in previous September
+Nprf.june3[t]~dbin(phi.r2.spring[t],Nnrf.mar3[t])      #Previously released females released in previous March
+Nprf.june4[t]~dbin(phi.r2.spring[t],Nprf.mar[t])       #Previously released females
+Nprf.june[t]<-Nprf.june1[t]+Nprf.june2[t]+Nprf.june3[t]+Nprf.june4[t]
+
+Nwmy.june[t]~dbin(phi.wj.spring[t],Nwmj.mar[t])
+Nwmad.june1[t]~dbin(phi.wad.spring[t],Nwmy.mar[t])     #Wild-hatched yearling males
+Nwmad.june2[t]~dbin(phi.wad.spring[t],Nwmad.mar[t])    #Wild-hatched adult males
+Nwmad.june[t]<-Nwmad.june1[t]+Nwmad.june2[t]
+
+Nwfy.june[t]~dbin(phi.wj.spring[t],Nwfj.mar[t])
+Nwfad.june1[t]~dbin(phi.wad.spring[t],Nwfy.mar[t])     #Wild-hatched yearling males
+Nwfad.june2[t]~dbin(phi.wad.spring[t],Nwfad.mar[t])    #Wild-hatched adult males
+Nwfad.june[t]<-Nwfad.june1[t]+Nwfad.june2[t]
+}
+
+#Calcurate population size with new release in June
+for (t in 1:sim.occasions){
+Ntot.june[t]<-Nrelease.june[t]+Nwild.june[t]
+Nrelease.june[t]<-Nprf.june[t]+Nprm.june[t]+Nnrf.june[t]+Nnrm.june[t]+Rm1.june[t]+Rf1.june[t]
+Nwild.june[t]<-Nwmj.june[t]+Nwmy.june[t]+Nwmad.june[t]+Nwfj.june[t]+Nwfy.june[t]+Nwfad.june[t]
+}
+
+#-------------------------------------------------  
+# 4.3 SEPTEMBER ##
+#Population size change with mortality from June to September
+for (t in 1: sim.occasions){
+Nnrm.spt1[t]~dbin(phi.r1.summer[t], Rm1.june[t])     #Newly released males released in June
+Nnrm.spt3[t]~dbin(phi.r1.summer[t], Nnrm.june[t])    #Newly released males released in previous March
+Nnrm.spt[t]<-Nnrm.spt1[t]+Nnrm.spt3[t]
+Nprm.spt1[t]~dbin(phi.r2.summer[t], Nprm.june1[t])   #Previously released males released in previous June
+Nprm.spt2[t]~dbin(phi.r1.summer[t], Nprm.june2[t])   #Previously released males released in previous September
+Nprm.spt3[t]~dbin(phi.r2.summer[t], Nprm.june3[t])   #Previously released males released in previous March
+Nprm.spt4[t]~dbin(phi.r2.summer[t], Nprm.june4[t])   #Previously released males
+Nprm.spt[t]<-Nprm.spt1[t]+Nprm.spt2[t]+Nprm.spt3[t]+Nprm.spt4[t]
+Nnrf.spt1[t]~dbin(phi.r1.summer[t], Rf1.june[t])     #Newly released males released in June
+Nnrf.spt3[t]~dbin(phi.r1.summer[t], Nnrf.june[t])    #Newly released males released in previous March
+Nnrf.spt[t]<-Nnrf.spt1[t]+Nnrf.spt3[t]
+Nprf.spt1[t]~dbin(phi.r2.summer[t], Nprf.june1[t])   #Previously released males released in previous June
+Nprf.spt2[t]~dbin(phi.r1.summer[t], Nprf.june2[t])   #Previously released males released in previous September
+Nprf.spt3[t]~dbin(phi.r2.summer[t], Nprf.june3[t])   #Previously released males released in previous March
+Nprf.spt4[t]~dbin(phi.r2.summer[t], Nprf.june4[t])   #Previously released males
+Nprf.spt[t]<-Nprf.spt1[t]+Nprf.spt2[t]+Nprf.spt3[t]+Nprf.spt4[t]
+Nwmj.spt[t]~dbin(phi.wj.summer[t], Nwmj.june[t])    #Wild-hatched juvenile males
+Nwmy.spt[t]~dbin(phi.wad.summer[t], Nwmy.june[t])   #Wild-hatched yearling males
+Nwmad.spt[t]~dbin(phi.wad.summer[t], Nwmad.june[t]) #Wild-hatched adult males
+Nwfj.spt[t]~dbin(phi.wj.summer[t], Nwfj.june[t])    #Wild-hatched juvenile females
+Nwfy.spt[t]~dbin(phi.wad.summer[t], Nwfy.june[t])   #Wild-hatched yearling females
+Nwfad.spt[t]~dbin(phi.wad.summer[t], Nwfad.june[t]) #Wild-hatched adult females
+}
+
+#Calcurate population size with new release
+for (t in 1: sim.occasions){
+Ntot.spt[t]<-Nrelease.spt[t]+Nwild.spt[t]
+Ntot.spt1[t]<-Nrelease.spt1[t]+Nwild.spt[t]                                              #Total population size before new release in September for roost-count
+Nrelease.spt1[t]<-Nnrf.spt[t]+Nprf.spt[t]+Nnrm.spt[t]+Nprm.spt[t]                        #Number of released individuals before new release
+Nrelease.spt[t]<-Nnrf.spt[t]+Nprf.spt[t]+Nnrm.spt[t]+Nprm.spt[t]+Rm1.spt[t]+Rf1.spt[t]
+Nwild.spt[t]<-Nwmj.spt[t]+Nwmy.spt[t]+Nwmad.spt[t]+Nwfj.spt[t]+Nwfy.spt[t]+Nwfad.spt[t]
+}
+
+
+#-------------------------------------------------  
+# 4.4 DECEMBER ##
+#Population size change with mortality from September to December
+for (t in 1:sim.occasions){
+Nnrm.dec1[t]~dbin(phi.r1.autumn[t], Nnrm.spt1[t])    #Newly released males in June
+Nnrm.dec2[t]~dbin(phi.r1.autumn[t], Rm1.spt[t])      #Newly released males in September
+Nnrm.dec3[t]~dbin(phi.r1.autumn[t], Nnrm.spt3[t])    #Newly released males in March
+Nnrm.dec[t]<-Nnrm.dec1[t]+Nnrm.dec2[t]+Nnrm.dec3[t]
+Nprm.dec[t]~dbin(phi.r2.autumn[t], Nprm.spt[t])      #Previously released males
+Nnrf.dec1[t]~dbin(phi.r1.autumn[t], Nnrf.spt1[t])    #Newly released males in June
+Nnrf.dec2[t]~dbin(phi.r1.autumn[t], Rf1.spt[t])      #Newly released males in September
+Nnrf.dec3[t]~dbin(phi.r1.autumn[t], Nnrf.spt3[t])    #Newly released males in March
+Nnrf.dec[t]<-Nnrf.dec1[t]+Nnrf.dec2[t]+Nnrf.dec3[t]
+Nprf.dec[t]~dbin(phi.r2.autumn[t], Nprf.spt[t])      #Previously released males
+Nwmj.dec[t]~dbin(phi.wj.autumn[t], Nwmj.spt[t])      #Wild-hatched juvenile males
+Nwmy.dec[t]~dbin(phi.wad.autumn[t], Nwmy.spt[t])     #Wild-hatched yearling males
+Nwmad.dec[t]~dbin(phi.wad.autumn[t], Nwmad.spt[t])   #Wild-hatched adult males
+Nwfj.dec[t]~dbin(phi.wj.autumn[t], Nwfj.spt[t])      #Wild-hatched juvenile females
+Nwfy.dec[t]~dbin(phi.wad.autumn[t], Nwfy.spt[t])     #Wild-hatched yearling females
+Nwfad.dec[t]~dbin(phi.wad.autumn[t], Nwfad.spt[t])   #Wild-hatched adult females
+}
+
+#Calcurate population size with new release
+for (t in 1:sim.occasions){
+Ntot.dec[t]<- Nrelease.dec[t]+Nwild.dec[t]
+Nrelease.dec[t]<-Nnrm.dec[t]+Nprm.dec[t]+Nnrf.dec[t]+Nprf.dec[t]
+Nwild.dec[t]<-Nwmj.dec[t]+Nwmy.dec[t]+Nwmad.dec[t]+Nwfj.dec[t]+Nwfy.dec[t]+Nwfad.dec[t]
+}
+
+
+#-------------------------------------------------  
+# 4.5 MATURE INDIVIDUALS IN JUNE ##
+#By subtracting the number of mature individuals from the number of surviving individuals,
+#we calculate the number of individuals that have not matured.
+#To avoid errors, if the result is negative, the value is fixed to 0.
+for (t in 1:sim.occasions){
+Nf.im[t]<-ifelse(Nprf.june[t]-Nfmat[t]>0,Nprf.june[t]-Nfmat[t],0)
+Nm.im[t]<-ifelse(Nprm.june[t]-Nmmat[t]>0,Nprm.june[t]-Nmmat[t],0)
+}
+
+#Derived parameter theta
+#Theta is the probability that an individual will breed successfully and that at least one of fledgeling will survive for two years.
+for (t in 5:sim.occasions){
+theta.rr[t]<-rs.rr[t-2]*(1-(1-a.phi.wj[t-2]*a.phi.wad[t-1])^f[t-2]) #for released-released pair
+theta.rw[t]<-rs.rw[t-2]*(1-(1-a.phi.wj[t-2]*a.phi.wad[t-1])^f[t-2]) #for released-wild pair
+}
+
+#Likelihood for newly mature individuals
+female.mature[1]<-0
+female.mature[2] <-0
+female.mature[3] <-0
+female.mature[4] <-0
+male.mature[1] <-0
+male.mature[2] <-0
+male.mature[3] <-0
+male.mature[4] <-0
+for (t in 5:sim.occasions){
+female.mature[t]<-a.phi.r2[t-1]*a.phi.r2[t-2]*Nf.im[t-2]*(rho.m[t-2]*theta.rr[t]+(1-rho.m[t-2])*theta.rw[t])
+male.mature[t]<-a.phi.r2[t-1]*a.phi.r2[t-2]*Nm.im[t-2]*(rho.f[t-2]*theta.rr[t]+(1-rho.f[t-2])*theta.rw[t])
+}
+for (t in 1:sim.occasions){
+Nfmat1[t]~dpois(female.mature[t])
+Nmmat1[t]~dpois(male.mature[t])
+}
+
+#Population size change with mortality
+Nfmat2[1]<-0
+Nmmat2[1]<-0
+for (t in 2:sim.occasions){
+Nfmat2[t]~dbin(a.phi.r2[t-1],Nfmat[t-1])
+Nmmat2[t]~dbin(a.phi.r2[t-1],Nmmat[t-1])
+}
+
+#Calcurate number of mature individuals
+for (t in 1:sim.occasions){
+Nmmat[t]<-Nmmat1[t]+Nmmat2[t]
+Nfmat[t]<-Nfmat1[t]+Nfmat2[t]
+Nmat.female[t]<-Nfmat[t]+Nwfad.june[t]
+Nmature[t]<-Nwmad.june[t]+Nwfad.june[t]+Nfmat1[t]+Nfmat2[t]+Nmmat1[t]+Nmmat2[t]
+}
+
+
+#-------------------------------------------------  
+# 5. SenarioII 30 individuals in June
+#-------------------------------------------------
+# 5.1 DERIVED PARAMETERS
+#For density-independent parameters, the values are the same as in Scenario I. 
+#For density-dependent parameters,the values are unique to Scenario II.
+
+# 5.1.1 SURVIVAL RATE ##
+for(s in 1:(n.season-1)){
+phi.r1II[s]<-phi.r1[s]
+phi.r2II[s]<-phi.r2[s]
+phi.wjII[s]<-phi.wj[s]
+phi.wadII[s]<-phi.wad[s]
+}
+for(s in n.season:(4*sim.occasions)){
+logit(phi.r1II[s])<-mu.r+beta1[1,season[s]]*N2II[s]+alpha2[season[s]]+epsilon.r[1,s]
+logit(phi.r2II[s])<-mu.r+beta1[2,season[s]]*N2II[s]+alpha1[2]+alpha2[season[s]]+epsilon.r[2,s]
+logit(phi.wjII[s])<-mu.w+beta2[1,season[s]]*N2II[s]+epsilon.w[1,s]
+logit(phi.wadII[s])<-mu.w+beta2[2,season[s]]*N2II[s]+alpha3[2]+epsilon.w[2,s]
+}
+
+#Seasonal survival: changing names just for easy understand
+for(t in n.occasions:sim.occasions){
+phi.r1.springII[t]<-phi.r1II[t*4-3]
+phi.r1.summerII[t]<-phi.r1II[t*4-2]
+phi.r1.autumnII[t]<-phi.r1II[t*4-1]
+phi.r1.winterII[t]<-phi.r1II[t*4]
+phi.r2.springII[t]<-phi.r2II[t*4-3]
+phi.r2.summerII[t]<-phi.r2II[t*4-2]
+phi.r2.autumnII[t]<-phi.r2II[t*4-1]
+phi.r2.winterII[t]<-phi.r2II[t*4]
+phi.wj.springII[t]<-phi.wjII[t*4-3]
+phi.wj.summerII[t]<-phi.wjII[t*4-2]
+phi.wj.autumnII[t]<-phi.wjII[t*4-1]
+phi.wj.winterII[t]<-phi.wjII[t*4]
+phi.wad.springII[t]<-phi.wadII[t*4-3]
+phi.wad.summerII[t]<-phi.wadII[t*4-2]
+phi.wad.autumnII[t]<-phi.wadII[t*4-1]
+phi.wad.winterII[t]<-phi.wadII[t*4]
+}
+
+#Annual survival
+for(t in 1:(n.occasions-1)){
+a.phi.r1II[t]<-a.phi.r1[t]
+a.phi.r2II[t]<-a.phi.r2[t]
+a.phi.wjII[t]<-a.phi.wj[t]
+a.phi.wadII[t]<-a.phi.wad[t]
+}
+for(t in n.occasions:(sim.occasions-1)){
+a.phi.r1II[t]<-phi.r1II[t*4]*phi.r1II[t*4-1]*phi.r1II[t*4-2]*phi.r1II[t*4-3]
+a.phi.r2II[t]<- phi.r2II[t*4]*phi.r2II[t*4-1]*phi.r2II[t*4-2]*phi.r2II[t*4-3]
+a.phi.wjII[t]<-phi.wjII[t*4]*phi.wjII[t*4-1]*phi.wjII[t*4-2]*phi.wjII[t*4-3]
+a.phi.wadII[t]<- phi.wadII[t*4]*phi.wadII[t*4-1]*phi.wadII[t*4-2]*phi.wadII[t*4-3]
+}
+
+#-------------------------------------------------  
+# 5.1.2 REPRODUCTION ##
+#Attributes specific reproductive success rate
+for(t in 1:n.occasions){
+rs.rrII[t]<-rs.rr[t]
+}
+for(t in (n.occasions+1):sim.occasions){
+logit(rs.rrII[t])<-mu.rs+beta3[1]*N.juneII[t]+epsilon.rs[1,t]
+}
+
+#-------------------------------------------------  
+# 5.1.3 PROPORTION OF RELEASED INDIVIDUALS ##
+for (t in 1:n.occasions){
+rho.mII[t]<-rho.m[t]
+rho.fII[t]<-rho.f[t]
+}
+for (t in (n.occasions+1):sim.occasions){
+rho.mII[t]<-Nprm.juneII[t]/(Nprm.juneII[t]+Nwmad.juneII[t]+0.00000001)
+rho.fII[t]<-Nprf.juneII[t]/(Nprf.juneII[t]+Nwfad.juneII[t]+0.00000001)
+}
+
+#-------------------------------------------------  
+# 5.1.4 STANDARDIZED POPULATION SIZE ##
+#Mean(182.876) and sd (167.061) was obtained from the IPM without density effect
+#Every three month
+for(t in 1:(n.occasions-1)){
+N2II[t*4]<-N2[t*4]
+N2II[t*4-1]<-N2[t*4-1]
+N2II[t*4-2]<-N2[t*4-2]
+N2II[t*4-3]<-N2[t*4-3]
+}
+for(t in n.occasions:sim.occasions){
+N2II[t*4]<-(Ntot.decII[t]-182.876)/167.061
+N2II[t*4-1]<-(Ntot.sptII[t]-182.876)/167.061
+N2II[t*4-2]<-(N.juneII[t]-182.876)/167.061
+N2II[t*4-3]<-(Ntot.marII[t]-182.876)/167.061
+}
+
+#Every June
+N.juneII[n.occasions]<-N.june[n.occasions]
+for (t in (n.occasions+1):sim.occasions){
+N.juneII[t]<-(Nrelease.juneII[t]+Nwmy.juneII[t]+Nwmad.juneII[t]+Nwfy.juneII[t]+Nwfad.juneII[t]-182.876)/167.061
+}
+
+#-------------------------------------------------  
+# 5.2 ECOLOGICAL STATE MODEL
+# 5.2.1 MARCH ##
+#The first release was in September 2008, thus number of individuals set 0 in March 2008. 
+Nnrm.mar1II[n.occasions]<-Nnrm.mar1[n.occasions]
+Nnrm.mar2II[n.occasions]<-Nnrm.mar2[n.occasions]
+Nnrm.mar3II[n.occasions]<-Nnrm.mar3[n.occasions]
+Nnrm.marII[n.occasions]<-Nnrm.mar[n.occasions]
+Nprm.marII[n.occasions]<-Nprm.mar[n.occasions]
+Nnrf.mar1II[n.occasions]<-Nnrf.mar1[n.occasions]
+Nnrf.mar2II[n.occasions]<-Nnrf.mar2[n.occasions]
+Nnrf.mar3II[n.occasions]<-Nnrf.mar3[n.occasions]
+Nnrf.marII[n.occasions]<-Nnrf.mar[n.occasions]
+Nprf.marII[n.occasions]<-Nprf.mar[n.occasions]
+Nwmj.marII[n.occasions]<-Nwmj.mar[n.occasions]
+Nwmy.marII[n.occasions]<-Nwmy.mar[n.occasions]
+Nwmad.marII[n.occasions]<-Nwmad.mar[n.occasions]
+Nwfj.marII[n.occasions]<-Nwfj.mar[n.occasions]
+Nwfy.marII[n.occasions]<-Nwfy.mar[n.occasions]
+Nwfad.marII[n.occasions]<-Nwfad.mar[n.occasions]
+
+
+#Population size change with mortality
+for (t in (n.occasions+1):sim.occasions){
+Nnrm.mar1II[t]~dbin(phi.r1.winterII[t-1],Nnrm.dec1II[t-1])   #Newly released males released in previous June
+Nnrm.mar2II[t]~dbin(phi.r1.winterII[t-1],Nnrm.dec2II[t-1])   #Newly released males released in previous September
+Nnrm.mar3II[t]~dbin(phi.r1.winterII[t-1],Nnrm.dec3II[t-1])   #Newly released males released in previous March
+Nnrm.marII[t]<-Nnrm.mar1II[t]+Nnrm.mar2II[t]+Nnrm.mar3II[t]
+Nprm.marII[t]~dbin(phi.r2.winterII[t-1],Nprm.decII[t-1])     #Previously released males
+Nnrf.mar1II[t]~dbin(phi.r1.winterII[t-1],Nnrf.dec1II[t-1])   #Newly released females released in previous June
+Nnrf.mar2II[t]~dbin(phi.r1.winterII[t-1],Nnrf.dec2II[t-1])   #Newly released females released in previous September
+Nnrf.mar3II[t]~dbin(phi.r1.winterII[t-1],Nnrf.dec3II[t-1])   #Newly released females released in previous March
+Nnrf.marII[t]<-Nnrf.mar1II[t]+Nnrf.mar2II[t]+Nnrf.mar3II[t]
+Nprf.marII[t]~dbin(phi.r2.winterII[t-1],Nprf.decII[t-1])     #Previously released females
+Nwmj.marII[t]~dbin(phi.wj.winterII[t-1],Nwmj.decII[t-1])     #Wild-hatched juvenile males
+Nwmy.marII[t]~dbin(phi.wad.winterII[t-1],Nwmy.decII[t-1])    #Wild-hatched yearling males
+Nwmad.marII[t]~dbin(phi.wad.winterII[t-1],Nwmad.decII[t-1])  #Wild-hatched adult males
+Nwfj.marII[t]~dbin(phi.wj.winterII[t-1],Nwfj.decII[t-1])     #Wild-hatched juvenile females
+Nwfy.marII[t]~dbin(phi.wad.winterII[t-1],Nwfy.decII[t-1])    #Wild-hatched yearling females
+Nwfad.marII[t]~dbin(phi.wad.winterII[t-1],Nwfad.decII[t-1])  #Wild-hatched adult females
+}
+
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.marII[t]<-Nrelease.marII[t]+Nwild.marII[t]
+Nrelease.marII[t]<-Nprf.marII[t]+Nprm.marII[t]+Nnrf.marII[t]+Nnrm.marII[t] Nwild.marII[t]<-Nwmy.marII[t]+Nwmad.marII[t]+Nwfy.marII[t]+Nwfad.marII[t]
+}
+
+#-------------------------------------------------  
+# 5.2.2 JUNE ##
+#Reproduction
+#Number of pairs set 0 in 2008 and 2009. This is because there was no Crested Ibis in June 2008 and no breeding activity was observed in 2009. 
+NrrII[n.occasions]<-Nrr[n.occasions]
+NrwII[n.occasions]<-Nrw[n.occasions]
+NwwII[n.occasions]<-Nww[n.occasions]
+
+#Pair formation
+for (t in (n.occasions+1):sim.occasions){
+NrrII[t]<-rho.mII[t]*Nprf.juneII[t]                               #Number of released-released pair
+NrwII[t]<-rho.mII[t]* Nwfad.juneII[t]+(1-rho.mII[t])*Nprf.juneII[t]   #Number of released-wild pair
+NwwII[t]<-(1-rho.mII[t])* Nwfad.juneII[t]                          #Number of wild-wild pair
+}
+
+#Fledge
+Nwmj.juneII[n.occasions]<- Nwmj.june[n.occasions]
+Nwfj.juneII[n.occasions]<- Nwfj.june[n.occasions]
+Nwj.juneII[n.occasions]<- Nwj.june[n.occasions]
+for(t in (n.occasions+1):sim.occasions){
+lambda.mII[t]<-(NrrII[t]*rs.rrII[t]*f[t]+NrwII[t]*rs.rw[t]*f[t]+NwwII[t]*rs.ww[t]*f[t])*sr[t]
+lambda.fII[t]<-(NrrII[t]*rs.rrII[t]*f[t]+NrwII[t]*rs.rw[t]*f[t]+NwwII[t]*rs.ww[t]*f[t])*(1-sr[t])
+Nwmj.juneII[t]~dpois(lambda.mII[t])
+Nwfj.juneII[t]~dpois(lambda.fII[t])
+Nwj.juneII[t]<- Nwmj.juneII[t]+Nwfj.juneII[t]
+}
+
+#Population size change with mortality
+for (t in 1:(n.occasions-1)){
+Nnrm.juneII[t] <- Nnrm.june[t] 
+Nprm.june1II[t]<- Nprm.june1[t] 
+Nprm.june2II[t]<- Nprm.june2[t] 
+Nprm.june3II[t]<- Nprm.june3[t] 
+Nprm.june4II[t]<- Nprm.june4[t] 
+Nprm.juneII[t]<- Nprm.june[t] 
+Nnrf.juneII[t] <- Nnrf.june[t] 
+Nprf.june1II[t]<- Nprf.june1[t] 
+Nprf.june2II[t]<- Nprf.june2[t] 
+Nprf.june3II[t]<- Nprf.june3[t] 
+Nprf.june4II[t]<- Nprf.june4[t] 
+Nprf.juneII[t]<- Nprf.june[t] 
+Nwmy.juneII[t]<-Nwmy.june[t]
+Nwmad.juneII[t]<-Nwmad.june[t]
+Nwfy.juneII[t]<-Nwfy.june[t]
+Nwfad.juneII[t]<-Nwfad.june[t]
+}
+
+for (t in n.occasions:sim.occasions){
+Nnrm.juneII[t] <-0
+Nnrf.juneII[t] <-0
+Nprm.june1II[t]~dbin(phi.r1.springII[t],Nnrm.mar1II[t])      #Previously released males released in previous June
+Nprm.june2II[t]~dbin(phi.r1.springII[t],Nnrm.mar2II[t])      #Previously released males released in previous September
+Nprm.june3II[t]~dbin(phi.r2.springII[t],Nnrm.mar3II[t])      #Previously released males released in previous March
+Nprm.june4II[t]~dbin(phi.r2.springII[t],Nprm.marII[t])       #Previously released males
+Nprm.juneII[t]<-Nprm.june1II[t]+Nprm.june2II[t]+Nprm.june3II[t]+Nprm.june4II[t]
+
+Nprf.june1II[t]~dbin(phi.r1.springII[t],Nnrf.mar1II[t])      #Previously released males released in previous June
+Nprf.june2II[t]~dbin(phi.r1.springII[t],Nnrf.mar2II[t])      #Previously released males released in previous September
+Nprf.june3II[t]~dbin(phi.r2.springII[t],Nnrf.mar3II[t])      #Previously released males released in previous March
+Nprf.june4II[t]~dbin(phi.r2.springII[t],Nprf.marII[t])       #Previously released males
+Nprf.juneII[t]<-Nprf.june1II[t]+Nprf.june2II[t]+Nprf.june3II[t]+Nprf.june4II[t]
+
+Nwmy.juneII[t]~dbin(phi.wj.springII[t],Nwmj.marII[t])
+Nwmad.june1II[t]~dbin(phi.wad.springII[t],Nwmy.marII[t])   #Wild-hatched yearling males
+Nwmad.june2II[t]~dbin(phi.wad.springII[t],Nwmad.marII[t]) #Wild-hatched adult males
+Nwmad.juneII[t]<-Nwmad.june1II[t]+Nwmad.june2II[t]
+Nwfy.juneII[t]~dbin(phi.wj.springII[t],Nwfj.marII[t])
+Nwfad.june1II[t]~dbin(phi.wad.springII[t],Nwfy.marII[t])   #Wild-hatched yearling males
+Nwfad.june2II[t]~dbin(phi.wad.springII[t],Nwfad.marII[t]) #Wild-hatched adult males
+Nwfad.juneII[t]<-Nwfad.june1II[t]+Nwfad.june2II[t]
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.juneII[t]<-Nrelease.juneII[t]+Nwild.juneII[t]
+Nrelease.juneII[t]<-Nprf.juneII[t]+Nprm.juneII[t]+Rm1.juneII[t]+Rf1.juneII[t]
+Nwild.juneII[t]<-Nwmj.juneII[t]+Nwmy.juneII[t]+Nwmad.juneII[t]+Nwfj.juneII[t]+Nwfy.juneII[t]+Nwfad.juneII[t]
+}
+
+#-------------------------------------------------  
+# 5.2.3 SEPTEMBER ##
+#Population size change with mortality
+for (t in n.occasions:sim.occasions){
+Nnrm.spt1II[t]~dbin(phi.r1.summerII[t], Rm1.juneII[t])     #Newly released males released in June
+Nnrm.spt3II[t]~dbin(phi.r1.summerII[t], Nnrm.juneII[t])    #Newly released males released in previous March
+Nnrm.sptII[t]<-Nnrm.spt1II[t]+Nnrm.spt3II[t]
+Nprm.spt1II[t]~dbin(phi.r2.summerII[t], Nprm.june1II[t])   #Previously released males released in previous June
+Nprm.spt2II[t]~dbin(phi.r1.summerII[t], Nprm.june2II[t])   #Previously released males released in previous September
+Nprm.spt3II[t]~dbin(phi.r2.summerII[t], Nprm.june3II[t])   #Previously released males released in previous March
+Nprm.spt4II[t]~dbin(phi.r2.summerII[t], Nprm.june4II[t])   #Previously released males
+Nprm.sptII[t]<-Nprm.spt1II[t]+Nprm.spt2II[t]+Nprm.spt3II[t]+Nprm.spt4II[t]
+Nnrf.spt1II[t]~dbin(phi.r1.summerII[t], Rf1.juneII[t])     #Newly released males released in June
+Nnrf.spt3II[t]~dbin(phi.r1.summerII[t], Nnrf.juneII[t])    #Newly released males released in previous March
+Nnrf.sptII[t]<-Nnrf.spt1II[t]+Nnrf.spt3II[t]
+Nprf.spt1II[t]~dbin(phi.r2.summerII[t], Nprf.june1II[t])   #Previously released males released in previous June
+Nprf.spt2II[t]~dbin(phi.r1.summerII[t], Nprf.june2II[t])   #Previously released males released in previous September
+Nprf.spt3II[t]~dbin(phi.r2.summerII[t], Nprf.june3II[t])   #Previously released males released in previous March
+Nprf.spt4II[t]~dbin(phi.r2.summerII[t], Nprf.june4II[t])   #Previously released males
+Nprf.sptII[t]<-Nprf.spt1II[t]+Nprf.spt2II[t]+Nprf.spt3II[t]+Nprf.spt4II[t]
+Nwmj.sptII[t]~dbin(phi.wj.summerII[t], Nwmj.juneII[t])    #Wild-hatched juvenile males
+Nwmy.sptII[t]~dbin(phi.wad.summerII[t], Nwmy.juneII[t])   #Wild-hatched yearling males
+Nwmad.sptII[t]~dbin(phi.wad.summerII[t], Nwmad.juneII[t]) #Wild-hatched adult males
+Nwfj.sptII[t]~dbin(phi.wj.summerII[t], Nwfj.juneII[t])    #Wild-hatched juvenile females
+Nwfy.sptII[t]~dbin(phi.wad.summerII[t], Nwfy.juneII[t])   #Wild-hatched yearling females
+Nwfad.sptII[t]~dbin(phi.wad.summerII[t], Nwfad.juneII[t]) #Wild-hatched adult females
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.sptII[t]<-Nrelease.sptII[t]+Nwild.sptII[t]
+Nrelease.sptII[t]<-Nnrf.sptII[t]+Nprf.sptII[t]+Nnrm.sptII[t]+Nprm.sptII[t] Nwild.sptII[t]<-Nwmj.sptII[t]+Nwmy.sptII[t]+Nwmad.sptII[t]+Nwfj.sptII[t]+Nwfy.sptII[t]+Nwfad.sptII[t]
+}
+
+#-------------------------------------------------  
+# 5.2.4 DECEMBER ##
+#Population size change with mortality
+for (t in n.occasions:sim.occasions){
+Nnrm.dec1II[t]~dbin(phi.r1.autumnII[t], Nnrm.spt1II[t])    #Newly released males in June
+Nnrm.dec2II[t]~dbin(phi.r1.autumnII[t], Rm1.sptII[t])      #Newly released males in September
+Nnrm.dec3II[t]~dbin(phi.r1.autumnII[t], Nnrm.spt3II[t])    #Newly released males in March
+Nnrm.decII[t]<-Nnrm.dec1II[t]+Nnrm.dec2II[t]+Nnrm.dec3II[t]
+Nprm.decII[t]~dbin(phi.r2.autumnII[t], Nprm.sptII[t])      #Previously released males
+Nnrf.dec1II[t]~dbin(phi.r1.autumnII[t], Nnrf.spt1II[t])    #Newly released males in June
+Nnrf.dec2II[t]~dbin(phi.r1.autumnII[t], Rf1.sptII[t])      #Newly released males in September
+Nnrf.dec3II[t]~dbin(phi.r1.autumnII[t], Nnrf.spt3II[t])    #Newly released males in March
+Nnrf.decII[t]<-Nnrf.dec1II[t]+Nnrf.dec2II[t]+Nnrf.dec3II[t]
+Nprf.decII[t]~dbin(phi.r2.autumnII[t], Nprf.sptII[t])      #Previously released males
+Nwmj.decII[t]~dbin(phi.wj.autumnII[t], Nwmj.sptII[t])      #Wild-hatched juvenile males
+Nwmy.decII[t]~dbin(phi.wad.autumnII[t], Nwmy.sptII[t])     #Wild-hatched yearling males
+Nwmad.decII[t]~dbin(phi.wad.autumnII[t], Nwmad.sptII[t])   #Wild-hatched adult males
+Nwfj.decII[t]~dbin(phi.wj.autumnII[t], Nwfj.sptII[t])      #Wild-hatched juvenile females
+Nwfy.decII[t]~dbin(phi.wad.autumnII[t], Nwfy.sptII[t])     #Wild-hatched yearling females
+Nwfad.decII[t]~dbin(phi.wad.autumnII[t], Nwfad.sptII[t])   #Wild-hatched adult females
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.decII[t]<- Nrelease.decII[t]+Nwild.decII[t]
+Nrelease.decII[t]<-Nnrm.decII[t]+Nprm.decII[t]+Nnrf.decII[t]+Nprf.decII[t]
+Nwild.decII[t]<-Nwmj.decII[t]+Nwmy.decII[t]+Nwmad.decII[t]+Nwfj.decII[t]+Nwfy.decII[t]+Nwfad.decII[t]
+}
+
+
+
+#-------------------------------------------------  
+# 5.2.5 MATURE INDIVIDUALS IN JUNE ##
+#By subtracting the number of mature individuals from the number of surviving individuals,
+#we calculate the number of individuals that have not matured.
+#To avoid errors, if the result is negative, the value is fixed to 0.
+for (t in 1:sim.occasions){
+Nf.imII[t]<-ifelse(Nprf.juneII[t]-NfmatII[t]>0,Nprf.juneII[t]-NfmatII[t],0)
+Nm.imII[t]<-ifelse(Nprm.juneII[t]-NmmatII[t]>0,Nprm.juneII[t]-NmmatII[t],0)
+}
+
+#Derived parameter theta
+#Theta is the probability that an individual will breed successfully and that at least one of fledgeling will survive for two years.
+for (t in 5:sim.occasions){
+theta.rrII[t]<-rs.rrII[t-2]*(1-(1-a.phi.wjII[t-2]*a.phi.wadII[t-1])^f[t-2]) #for released-released pair
+}
+
+#Likelihood for newly mature individuals
+female.matureII[1]<-0
+female.matureII[2] <-0
+female.matureII[3] <-0
+female.matureII[4] <-0
+male.matureII[1] <-0
+male.matureII[2] <-0
+male.matureII[3] <-0
+male.matureII[4] <-0
+for (t in 5:sim.occasions){
+female.matureII[t]<-a.phi.r2II[t-1]*a.phi.r2II[t-2]*Nf.imII[t-2]*(rho.mII[t-2]*theta.rrII[t]+(1-rho.mII[t-2])*theta.rw[t])
+male.matureII[t]<-a.phi.r2II[t-1]*a.phi.r2II[t-2]*Nm.imII[t-2]*(rho.fII[t-2]*theta.rrII[t]+(1-rho.fII[t-2])*theta.rw[t])
+}
+for (t in 1:sim.occasions){
+Nfmat1II[t]~dpois(female.matureII[t])
+Nmmat1II[t]~dpois(male.matureII[t])
+}
+
+#Population size change with mortality
+Nfmat2II[1]<-0
+Nmmat2II[1]<-0
+for (t in 2:sim.occasions){
+Nfmat2II[t]~dbin(a.phi.r2II[t-1],NfmatII[t-1])
+Nmmat2II[t]~dbin(a.phi.r2II[t-1],NmmatII[t-1])
+}
+
+#Calcurate number of mature individuals
+for (t in 1:sim.occasions){
+NmmatII[t]<-Nmmat1II[t]+Nmmat2II[t]
+NfmatII[t]<-Nfmat1II[t]+Nfmat2II[t]
+Nmat.femaleII[t]<-NfmatII[t]+Nwfad.juneII[t]
+NmatureII[t]<-Nwmad.juneII[t]+Nwfad.juneII[t]+Nfmat1II[t]+Nfmat2II[t]+Nmmat1II[t]+Nmmat2II[t]
+}
+
+
+#-------------------------------------------------  
+# 6. SenarioIII 30 individuals in June for next 5years
+#-------------------------------------------------
+# 6.1 DERIVED PARAMETERS
+#For density-independent parameters, the values are the same as in Scenario I. 
+#For density-dependent parameters,the values are unique to Scenario III.
+
+# 6.1.1 SURVIVAL RATE ##
+for(s in 1:(n.season-1)){
+phi.r1III[s]<-phi.r1[s]
+phi.r2III[s]<-phi.r2[s]
+phi.wjIII[s]<-phi.wj[s]
+phi.wadIII[s]<-phi.wad[s]
+}
+for(s in n.season:(4*sim.occasions)){
+logit(phi.r1III[s])<-mu.r+beta1[1,season[s]]*N2III[s]+alpha2[season[s]]+epsilon.r[1,s]
+logit(phi.r2III[s])<-mu.r+beta1[2,season[s]]*N2III[s]+alpha1[2]+alpha2[season[s]]+epsilon.r[2,s]
+logit(phi.wjIII[s])<-mu.w+beta2[1,season[s]]*N2III[s]+epsilon.w[1,s]
+logit(phi.wadIII[s])<-mu.w+beta2[2,season[s]]*N2III[s]+alpha3[2]+epsilon.w[2,s]
+}
+
+#Seasonal survival: changing names just for easy understand
+for(t in n.occasions:sim.occasions){
+phi.r1.springIII[t]<-phi.r1III[t*4-3]
+phi.r1.summerIII[t]<-phi.r1III[t*4-2]
+phi.r1.autumnIII[t]<-phi.r1III[t*4-1]
+phi.r1.winterIII[t]<-phi.r1III[t*4]
+phi.r2.springIII[t]<-phi.r2III[t*4-3]
+phi.r2.summerIII[t]<-phi.r2III[t*4-2]
+phi.r2.autumnIII[t]<-phi.r2III[t*4-1]
+phi.r2.winterIII[t]<-phi.r2III[t*4]
+phi.wj.springIII[t]<-phi.wjIII[t*4-3]
+phi.wj.summerIII[t]<-phi.wjIII[t*4-2]
+phi.wj.autumnIII[t]<-phi.wjIII[t*4-1]
+phi.wj.winterIII[t]<-phi.wjIII[t*4]
+phi.wad.springIII[t]<-phi.wadIII[t*4-3]
+phi.wad.summerIII[t]<-phi.wadIII[t*4-2]
+phi.wad.autumnIII[t]<-phi.wadIII[t*4-1]
+phi.wad.winterIII[t]<-phi.wadIII[t*4]
+}
+
+#Annual survival
+for(t in 1:(n.occasions-1)){
+a.phi.r1III[t]<-a.phi.r1[t]
+a.phi.r2III[t]<-a.phi.r2[t]
+a.phi.wjIII[t]<-a.phi.wj[t]
+a.phi.wadIII[t]<-a.phi.wad[t]
+}
+for(t in n.occasions:(sim.occasions-1)){
+a.phi.r1III[t]<-phi.r1III[t*4]*phi.r1III[t*4-1]*phi.r1III[t*4-2]*phi.r1III[t*4-3]
+a.phi.r2III[t]<- phi.r2III[t*4]*phi.r2III[t*4-1]*phi.r2III[t*4-2]*phi.r2III[t*4-3]
+a.phi.wjIII[t]<-phi.wjIII[t*4]*phi.wjIII[t*4-1]*phi.wjIII[t*4-2]*phi.wjIII[t*4-3]
+a.phi.wadIII[t]<- phi.wadIII[t*4]*phi.wadIII[t*4-1]*phi.wadIII[t*4-2]*phi.wadIII[t*4-3]
+}
+
+#-------------------------------------------------  
+# 6.1.2 REPRODUCTION ##
+#Attributes specific reproductive success rate
+for(t in 1:n.occasions){
+rs.rrIII[t]<-rs.rr[t]
+}
+for(t in (n.occasions+1):sim.occasions){
+logit(rs.rrIII[t])<-mu.rs+beta3[1]*N.juneIII[t]+epsilon.rs[1,t]
+}
+
+#-------------------------------------------------  
+# 6.1.3 PROPORTION OF RELEASED INDIVIDUALS ##
+for (t in 1:n.occasions){
+rho.mIII[t]<-rho.m[t]
+rho.fIII[t]<-rho.f[t]
+}
+for (t in (n.occasions+1):sim.occasions){
+rho.mIII[t]<-Nprm.juneIII[t]/(Nprm.juneIII[t]+Nwmad.juneIII[t]+0.00000001)
+rho.fIII[t]<-Nprf.juneIII[t]/(Nprf.juneIII[t]+Nwfad.juneIII[t]+0.00000001)
+}
+
+#-------------------------------------------------  
+# 6.1.4 STANDARDIZED POPULATION SIZE ##
+#Mean(182.876) and sd (167.061) was obtained from the IPM without density effect
+#Every three month
+for(t in 1:(n.occasions-1)){
+N2III[t*4]<-N2[t*4]
+N2III[t*4-1]<-N2[t*4-1]
+N2III[t*4-2]<-N2[t*4-2]
+N2III[t*4-3]<-N2[t*4-3]
+}
+for(t in n.occasions:sim.occasions){
+N2III[t*4]<-(Ntot.decIII[t]-182.876)/167.061
+N2III[t*4-1]<-(Ntot.sptIII[t]-182.876)/167.061
+N2III[t*4-2]<-(N.juneIII[t]-182.876)/167.061
+N2III[t*4-3]<-(Ntot.marIII[t]-182.876)/167.061
+}
+
+#Every June
+N.juneIII[n.occasions]<-N.june[n.occasions]
+for (t in (n.occasions+1):sim.occasions){
+N.juneIII[t]<-(Nrelease.juneIII[t]+Nwmy.juneIII[t]+Nwmad.juneIII[t]+Nwfy.juneIII[t]+Nwfad.juneIII[t]-182.876)/167.061
+}
+
+#-------------------------------------------------  
+# 6.2 ECOLOGICAL STATE MODEL
+# 6.2.1 MARCH ##
+#The first release was in September 2008, thus number of individuals set 0 in March 2008. 
+Nnrm.mar1III[n.occasions]<-Nnrm.mar1[n.occasions]
+Nnrm.mar2III[n.occasions]<-Nnrm.mar2[n.occasions]
+Nnrm.mar3III[n.occasions]<-Nnrm.mar3[n.occasions]
+Nnrm.marIII[n.occasions]<-Nnrm.mar[n.occasions]
+Nprm.marIII[n.occasions]<-Nprm.mar[n.occasions]
+Nnrf.mar1III[n.occasions]<-Nnrf.mar1[n.occasions]
+Nnrf.mar2III[n.occasions]<-Nnrf.mar2[n.occasions]
+Nnrf.mar3III[n.occasions]<-Nnrf.mar3[n.occasions]
+Nnrf.marIII[n.occasions]<-Nnrf.mar[n.occasions]
+Nprf.marIII[n.occasions]<-Nprf.mar[n.occasions]
+Nwmj.marIII[n.occasions]<-Nwmj.mar[n.occasions]
+Nwmy.marIII[n.occasions]<-Nwmy.mar[n.occasions]
+Nwmad.marIII[n.occasions]<-Nwmad.mar[n.occasions]
+Nwfj.marIII[n.occasions]<-Nwfj.mar[n.occasions]
+Nwfy.marIII[n.occasions]<-Nwfy.mar[n.occasions]
+Nwfad.marIII[n.occasions]<-Nwfad.mar[n.occasions]
+
+
+#Population size change with mortality
+for (t in (n.occasions+1):sim.occasions){
+Nnrm.mar1III[t]~dbin(phi.r1.winterIII[t-1],Nnrm.dec1III[t-1])   #Newly released males released in previous June
+Nnrm.mar2III[t]~dbin(phi.r1.winterIII[t-1],Nnrm.dec2III[t-1])   #Newly released males released in previous September
+Nnrm.mar3III[t]~dbin(phi.r1.winterIII[t-1],Nnrm.dec3III[t-1])   #Newly released males released in previous March
+Nnrm.marIII[t]<-Nnrm.mar1III[t]+Nnrm.mar2III[t]+Nnrm.mar3III[t]
+Nprm.marIII[t]~dbin(phi.r2.winterIII[t-1],Nprm.decIII[t-1])     #Previously released males
+Nnrf.mar1III[t]~dbin(phi.r1.winterIII[t-1],Nnrf.dec1III[t-1])   #Newly released females released in previous June
+Nnrf.mar2III[t]~dbin(phi.r1.winterIII[t-1],Nnrf.dec2III[t-1])   #Newly released females released in previous September
+Nnrf.mar3III[t]~dbin(phi.r1.winterIII[t-1],Nnrf.dec3III[t-1])   #Newly released females released in previous March
+Nnrf.marIII[t]<-Nnrf.mar1III[t]+Nnrf.mar2III[t]+Nnrf.mar3III[t]
+Nprf.marIII[t]~dbin(phi.r2.winterIII[t-1],Nprf.decIII[t-1])     #Previously released females
+Nwmj.marIII[t]~dbin(phi.wj.winterIII[t-1],Nwmj.decIII[t-1])     #Wild-hatched juvenile males
+Nwmy.marIII[t]~dbin(phi.wad.winterIII[t-1],Nwmy.decIII[t-1])    #Wild-hatched yearling males
+Nwmad.marIII[t]~dbin(phi.wad.winterIII[t-1],Nwmad.decIII[t-1])  #Wild-hatched adult males
+Nwfj.marIII[t]~dbin(phi.wj.winterIII[t-1],Nwfj.decIII[t-1])     #Wild-hatched juvenile females
+Nwfy.marIII[t]~dbin(phi.wad.winterIII[t-1],Nwfy.decIII[t-1])    #Wild-hatched yearling females
+Nwfad.marIII[t]~dbin(phi.wad.winterIII[t-1],Nwfad.decIII[t-1])  #Wild-hatched adult females
+}
+
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.marIII[t]<-Nrelease.marIII[t]+Nwild.marIII[t]
+Nrelease.marIII[t]<-Nprf.marIII[t]+Nprm.marIII[t]+Nnrf.marIII[t]+Nnrm.marIII[t] Nwild.marIII[t]<-Nwmy.marIII[t]+Nwmad.marIII[t]+Nwfy.marIII[t]+Nwfad.marIII[t]
+}
+
+#-------------------------------------------------  
+# 6.2.2 JUNE ##
+#Reproduction
+#Number of pairs set 0 in 2008 and 2009. This is because there was no Crested Ibis in June 2008 and no breeding activity was observed in 2009. 
+NrrIII[n.occasions]<-Nrr[n.occasions]
+NrwIII[n.occasions]<-Nrw[n.occasions]
+NwwIII[n.occasions]<-Nww[n.occasions]
+
+#Pair formation
+for (t in (n.occasions+1):sim.occasions){
+NrrIII[t]<-rho.mIII[t]*Nprf.juneIII[t]                               #Number of released-released pair
+NrwIII[t]<-rho.mIII[t]* Nwfad.juneIII[t]+(1-rho.mIII[t])*Nprf.juneIII[t]   #Number of released-wild pair
+NwwIII[t]<-(1-rho.mIII[t])* Nwfad.juneIII[t]                          #Number of wild-wild pair
+}
+
+#Fledge
+Nwmj.juneIII[n.occasions]<- Nwmj.june[n.occasions]
+Nwfj.juneIII[n.occasions]<- Nwfj.june[n.occasions]
+Nwj.juneIII[n.occasions]<- Nwj.june[n.occasions]
+for(t in (n.occasions+1):sim.occasions){
+lambda.mIII[t]<-(NrrIII[t]*rs.rrIII[t]*f[t]+NrwIII[t]*rs.rw[t]*f[t]+NwwIII[t]*rs.ww[t]*f[t])*sr[t]
+lambda.fIII[t]<-(NrrIII[t]*rs.rrIII[t]*f[t]+NrwIII[t]*rs.rw[t]*f[t]+NwwIII[t]*rs.ww[t]*f[t])*(1-sr[t])
+Nwmj.juneIII[t]~dpois(lambda.mIII[t])
+Nwfj.juneIII[t]~dpois(lambda.fIII[t])
+Nwj.juneIII[t]<- Nwmj.juneIII[t]+Nwfj.juneIII[t]
+}
+
+#Population size change with mortality
+for (t in 1:(n.occasions-1)){
+Nnrm.juneIII[t] <- Nnrm.june[t] 
+Nprm.june1III[t]<- Nprm.june1[t] 
+Nprm.june2III[t]<- Nprm.june2[t] 
+Nprm.june3III[t]<- Nprm.june3[t] 
+Nprm.june4III[t]<- Nprm.june4[t] 
+Nprm.juneIII[t]<- Nprm.june[t] 
+Nnrf.juneIII[t] <- Nnrf.june[t] 
+Nprf.june1III[t]<- Nprf.june1[t] 
+Nprf.june2III[t]<- Nprf.june2[t] 
+Nprf.june3III[t]<- Nprf.june3[t] 
+Nprf.june4III[t]<- Nprf.june4[t] 
+Nprf.juneIII[t]<- Nprf.june[t] 
+Nwmy.juneIII[t]<-Nwmy.june[t]
+Nwmad.juneIII[t]<-Nwmad.june[t]
+Nwfy.juneIII[t]<-Nwfy.june[t]
+Nwfad.juneIII[t]<-Nwfad.june[t]
+}
+
+for (t in n.occasions:sim.occasions){
+Nnrm.juneIII[t] <-0
+Nnrf.juneIII[t] <-0
+Nprm.june1III[t]~dbin(phi.r1.springIII[t],Nnrm.mar1III[t])      #Previously released males released in previous June
+Nprm.june2III[t]~dbin(phi.r1.springIII[t],Nnrm.mar2III[t])      #Previously released males released in previous September
+Nprm.june3III[t]~dbin(phi.r2.springIII[t],Nnrm.mar3III[t])      #Previously released males released in previous March
+Nprm.june4III[t]~dbin(phi.r2.springIII[t],Nprm.marIII[t])       #Previously released males
+Nprm.juneIII[t]<-Nprm.june1III[t]+Nprm.june2III[t]+Nprm.june3III[t]+Nprm.june4III[t]
+
+Nprf.june1III[t]~dbin(phi.r1.springIII[t],Nnrf.mar1III[t])      #Previously released males released in previous June
+Nprf.june2III[t]~dbin(phi.r1.springIII[t],Nnrf.mar2III[t])      #Previously released males released in previous September
+Nprf.june3III[t]~dbin(phi.r2.springIII[t],Nnrf.mar3III[t])      #Previously released males released in previous March
+Nprf.june4III[t]~dbin(phi.r2.springIII[t],Nprf.marIII[t])       #Previously released males
+Nprf.juneIII[t]<-Nprf.june1III[t]+Nprf.june2III[t]+Nprf.june3III[t]+Nprf.june4III[t]
+
+Nwmy.juneIII[t]~dbin(phi.wj.springIII[t],Nwmj.marIII[t])
+Nwmad.june1III[t]~dbin(phi.wad.springIII[t],Nwmy.marIII[t])   #Wild-hatched yearling males
+Nwmad.june2III[t]~dbin(phi.wad.springIII[t],Nwmad.marIII[t]) #Wild-hatched adult males
+Nwmad.juneIII[t]<-Nwmad.june1III[t]+Nwmad.june2III[t]
+Nwfy.juneIII[t]~dbin(phi.wj.springIII[t],Nwfj.marIII[t])
+Nwfad.june1III[t]~dbin(phi.wad.springIII[t],Nwfy.marIII[t])   #Wild-hatched yearling males
+Nwfad.june2III[t]~dbin(phi.wad.springIII[t],Nwfad.marIII[t]) #Wild-hatched adult males
+Nwfad.juneIII[t]<-Nwfad.june1III[t]+Nwfad.june2III[t]
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.juneIII[t]<-Nrelease.juneIII[t]+Nwild.juneIII[t]
+Nrelease.juneIII[t]<-Nprf.juneIII[t]+Nprm.juneIII[t]+Rm1.juneIII[t]+Rf1.juneIII[t]
+Nwild.juneIII[t]<-Nwmj.juneIII[t]+Nwmy.juneIII[t]+Nwmad.juneIII[t]+Nwfj.juneIII[t]+Nwfy.juneIII[t]+Nwfad.juneIII[t]
+}
+
+#-------------------------------------------------  
+# 6.2.3 SEPTEMBER ##
+#Population size change with mortality
+for (t in n.occasions:sim.occasions){
+Nnrm.spt1III[t]~dbin(phi.r1.summerIII[t], Rm1.juneIII[t])     #Newly released males released in June
+Nnrm.spt3III[t]~dbin(phi.r1.summerIII[t], Nnrm.juneIII[t])    #Newly released males released in previous March
+Nnrm.sptIII[t]<-Nnrm.spt1III[t]+Nnrm.spt3III[t]
+Nprm.spt1III[t]~dbin(phi.r2.summerIII[t], Nprm.june1III[t])   #Previously released males released in previous June
+Nprm.spt2III[t]~dbin(phi.r1.summerIII[t], Nprm.june2III[t])   #Previously released males released in previous September
+Nprm.spt3III[t]~dbin(phi.r2.summerIII[t], Nprm.june3III[t])   #Previously released males released in previous March
+Nprm.spt4III[t]~dbin(phi.r2.summerIII[t], Nprm.june4III[t])   #Previously released males
+Nprm.sptIII[t]<-Nprm.spt1III[t]+Nprm.spt2III[t]+Nprm.spt3III[t]+Nprm.spt4III[t]
+Nnrf.spt1III[t]~dbin(phi.r1.summerIII[t], Rf1.juneIII[t])     #Newly released males released in June
+Nnrf.spt3III[t]~dbin(phi.r1.summerIII[t], Nnrf.juneIII[t])    #Newly released males released in previous March
+Nnrf.sptIII[t]<-Nnrf.spt1III[t]+Nnrf.spt3III[t]
+Nprf.spt1III[t]~dbin(phi.r2.summerIII[t], Nprf.june1III[t])   #Previously released males released in previous June
+Nprf.spt2III[t]~dbin(phi.r1.summerIII[t], Nprf.june2III[t])   #Previously released males released in previous September
+Nprf.spt3III[t]~dbin(phi.r2.summerIII[t], Nprf.june3III[t])   #Previously released males released in previous March
+Nprf.spt4III[t]~dbin(phi.r2.summerIII[t], Nprf.june4III[t])   #Previously released males
+Nprf.sptIII[t]<-Nprf.spt1III[t]+Nprf.spt2III[t]+Nprf.spt3III[t]+Nprf.spt4III[t]
+Nwmj.sptIII[t]~dbin(phi.wj.summerIII[t], Nwmj.juneIII[t])    #Wild-hatched juvenile males
+Nwmy.sptIII[t]~dbin(phi.wad.summerIII[t], Nwmy.juneIII[t])   #Wild-hatched yearling males
+Nwmad.sptIII[t]~dbin(phi.wad.summerIII[t], Nwmad.juneIII[t]) #Wild-hatched adult males
+Nwfj.sptIII[t]~dbin(phi.wj.summerIII[t], Nwfj.juneIII[t])    #Wild-hatched juvenile females
+Nwfy.sptIII[t]~dbin(phi.wad.summerIII[t], Nwfy.juneIII[t])   #Wild-hatched yearling females
+Nwfad.sptIII[t]~dbin(phi.wad.summerIII[t], Nwfad.juneIII[t]) #Wild-hatched adult females
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.sptIII[t]<-Nrelease.sptIII[t]+Nwild.sptIII[t]
+Nrelease.sptIII[t]<-Nnrf.sptIII[t]+Nprf.sptIII[t]+Nnrm.sptIII[t]+Nprm.sptIII[t] Nwild.sptIII[t]<-Nwmj.sptIII[t]+Nwmy.sptIII[t]+Nwmad.sptIII[t]+Nwfj.sptIII[t]+Nwfy.sptIII 
+[t]+Nwfad.sptIII[t]
+}
+
+#-------------------------------------------------  
+# 6.2.4 DECEMBER ##
+#Population size change with mortality
+for (t in n.occasions:sim.occasions){
+Nnrm.dec1III[t]~dbin(phi.r1.autumnIII[t], Nnrm.spt1III[t])    #Newly released males in June
+Nnrm.dec2III[t]~dbin(phi.r1.autumnIII[t], Rm1.sptIII[t])      #Newly released males in September
+Nnrm.dec3III[t]~dbin(phi.r1.autumnIII[t], Nnrm.spt3III[t])    #Newly released males in March
+Nnrm.decIII[t]<-Nnrm.dec1III[t]+Nnrm.dec2III[t]+Nnrm.dec3III[t]
+Nprm.decIII[t]~dbin(phi.r2.autumnIII[t], Nprm.sptIII[t])      #Previously released males
+Nnrf.dec1III[t]~dbin(phi.r1.autumnIII[t], Nnrf.spt1III[t])    #Newly released males in June
+Nnrf.dec2III[t]~dbin(phi.r1.autumnIII[t], Rf1.sptIII[t])      #Newly released males in September
+Nnrf.dec3III[t]~dbin(phi.r1.autumnIII[t], Nnrf.spt3III[t])    #Newly released males in March
+Nnrf.decIII[t]<-Nnrf.dec1III[t]+Nnrf.dec2III[t]+Nnrf.dec3III[t]
+Nprf.decIII[t]~dbin(phi.r2.autumnIII[t], Nprf.sptIII[t])      #Previously released males
+Nwmj.decIII[t]~dbin(phi.wj.autumnIII[t], Nwmj.sptIII[t])      #Wild-hatched juvenile males
+Nwmy.decIII[t]~dbin(phi.wad.autumnIII[t], Nwmy.sptIII[t])     #Wild-hatched yearling males
+Nwmad.decIII[t]~dbin(phi.wad.autumnIII[t], Nwmad.sptIII[t])   #Wild-hatched adult males
+Nwfj.decIII[t]~dbin(phi.wj.autumnIII[t], Nwfj.sptIII[t])      #Wild-hatched juvenile females
+Nwfy.decIII[t]~dbin(phi.wad.autumnIII[t], Nwfy.sptIII[t])     #Wild-hatched yearling females
+Nwfad.decIII[t]~dbin(phi.wad.autumnIII[t], Nwfad.sptIII[t])   #Wild-hatched adult females
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.decIII[t]<- Nrelease.decIII[t]+Nwild.decIII[t]
+Nrelease.decIII[t]<-Nnrm.decIII[t]+Nprm.decIII[t]+Nnrf.decIII[t]+Nprf.decIII[t]
+Nwild.decIII[t]<-Nwmj.decIII[t]+Nwmy.decIII[t]+Nwmad.decIII[t]+Nwfj.decIII[t]+Nwfy.decIII[t]+Nwfad.decIII[t]
+}
+
+#-------------------------------------------------  
+# 6.2.5 MATURE INDIVIDUALS IN JUNE ##
+#By subtracting the number of mature individuals from the number of surviving individuals,
+#we calculate the number of individuals that have not matured.
+#To avoid errors, if the result is negative, the value is fixed to 0.
+for (t in 1:sim.occasions){
+Nf.imIII[t]<-ifelse(Nprf.juneIII[t]-NfmatIII[t]>0,Nprf.juneIII[t]-NfmatIII[t],0)
+Nm.imIII[t]<-ifelse(Nprm.juneIII[t]-NmmatIII[t]>0,Nprm.juneIII[t]-NmmatIII[t],0)
+}
+
+#Derived parameter theta
+#Theta is the probability that an individual will breed successfully and that at least one of fledgeling will survive for two years.
+for (t in 5:sim.occasions){
+theta.rrIII[t]<-rs.rrIII[t-2]*(1-(1-a.phi.wjIII[t-2]*a.phi.wadIII[t-1])^f[t-2]) #for released-released pair
+}
+
+#Likelihood for newly mature individuals
+female.matureIII[1]<-0
+female.matureIII[2] <-0
+female.matureIII[3] <-0
+female.matureIII[4] <-0
+male.matureIII[1] <-0
+male.matureIII[2] <-0
+male.matureIII[3] <-0
+male.matureIII[4] <-0
+for (t in 5:sim.occasions){
+female.matureIII[t]<-a.phi.r2III[t-1]*a.phi.r2III[t-2]*Nf.imIII[t-2]*(rho.mIII[t-2]*theta.rrIII[t]+(1-rho.mIII[t-2])*theta.rw[t])
+male.matureIII[t]<-a.phi.r2III[t-1]*a.phi.r2III[t-2]*Nm.imIII[t-2]*(rho.fIII[t-2]*theta.rrIII[t]+(1-rho.fIII[t-2])*theta.rw[t])
+}
+for (t in 1:sim.occasions){
+Nfmat1III[t]~dpois(female.matureIII[t])
+Nmmat1III[t]~dpois(male.matureIII[t])
+}
+
+#Population size change with mortality
+Nfmat2III[1]<-0
+Nmmat2III[1]<-0
+for (t in 2:sim.occasions){
+Nfmat2III[t]~dbin(a.phi.r2III[t-1],NfmatIII[t-1])
+Nmmat2III[t]~dbin(a.phi.r2III[t-1],NmmatIII[t-1])
+}
+
+#Calcurate number of mature individuals
+for (t in 1:sim.occasions){
+NmmatIII[t]<-Nmmat1III[t]+Nmmat2III[t]
+NfmatIII[t]<-Nfmat1III[t]+Nfmat2III[t]
+Nmat.femaleIII[t]<-NfmatIII[t]+ Nwfad.juneIII[t]
+NmatureIII[t]<-Nwmad.juneIII[t]+Nwfad.juneIII[t]+Nfmat1III[t]+Nfmat2III[t]+Nmmat1III[t]+Nmmat2III[t]
+}
+
+
+#-------------------------------------------------  
+# 7. SenarioIV 30 individuals in June for next 10 years
+#-------------------------------------------------
+# 7.1 DERIVED PARAMETERS
+#For density-independent parameters, the values are the same as in Scenario I. 
+#For density-dependent parameters,the values are unique to Scenario IV.
+
+# 7.1.1 SURVIVAL RATE ##
+for(s in 1:(n.season-1)){
+phi.r1IV[s]<-phi.r1[s]
+phi.r2IV[s]<-phi.r2[s]
+phi.wjIV[s]<-phi.wj[s]
+phi.wadIV[s]<-phi.wad[s]
+}
+for(s in n.season:(4*sim.occasions)){
+logit(phi.r1IV[s])<-mu.r+beta1[1,season[s]]*N2IV[s]+alpha2[season[s]]+epsilon.r[1,s]
+logit(phi.r2IV[s])<-mu.r+beta1[2,season[s]]*N2IV[s]+alpha1[2]+alpha2[season[s]]+epsilon.r[2,s]
+logit(phi.wjIV[s])<-mu.w+beta2[1,season[s]]*N2IV[s]+epsilon.w[1,s]
+logit(phi.wadIV[s])<-mu.w+beta2[2,season[s]]*N2IV[s]+alpha3[2]+epsilon.w[2,s]
+}
+
+#Seasonal survival: changing names just for easy understand
+for(t in n.occasions:sim.occasions){
+phi.r1.springIV[t]<-phi.r1IV[t*4-3]
+phi.r1.summerIV[t]<-phi.r1IV[t*4-2]
+phi.r1.autumnIV[t]<-phi.r1IV[t*4-1]
+phi.r1.winterIV[t]<-phi.r1IV[t*4]
+phi.r2.springIV[t]<-phi.r2IV[t*4-3]
+phi.r2.summerIV[t]<-phi.r2IV[t*4-2]
+phi.r2.autumnIV[t]<-phi.r2IV[t*4-1]
+phi.r2.winterIV[t]<-phi.r2IV[t*4]
+phi.wj.springIV[t]<-phi.wjIV[t*4-3]
+phi.wj.summerIV[t]<-phi.wjIV[t*4-2]
+phi.wj.autumnIV[t]<-phi.wjIV[t*4-1]
+phi.wj.winterIV[t]<-phi.wjIV[t*4]
+phi.wad.springIV[t]<-phi.wadIV[t*4-3]
+phi.wad.summerIV[t]<-phi.wadIV[t*4-2]
+phi.wad.autumnIV[t]<-phi.wadIV[t*4-1]
+phi.wad.winterIV[t]<-phi.wadIV[t*4]
+}
+
+#Annual survival
+for(t in 1:(n.occasions-1)){
+a.phi.r1IV[t]<-a.phi.r1[t]
+a.phi.r2IV[t]<-a.phi.r2[t]
+a.phi.wjIV[t]<-a.phi.wj[t]
+a.phi.wadIV[t]<-a.phi.wad[t]
+}
+for(t in n.occasions:(sim.occasions-1)){
+a.phi.r1IV[t]<-phi.r1IV[t*4]*phi.r1IV[t*4-1]*phi.r1IV[t*4-2]*phi.r1IV[t*4-3]
+a.phi.r2IV[t]<- phi.r2IV[t*4]*phi.r2IV[t*4-1]*phi.r2IV[t*4-2]*phi.r2IV[t*4-3]
+a.phi.wjIV[t]<-phi.wjIV[t*4]*phi.wjIV[t*4-1]*phi.wjIV[t*4-2]*phi.wjIV[t*4-3]
+a.phi.wadIV[t]<- phi.wadIV[t*4]*phi.wadIV[t*4-1]*phi.wadIV[t*4-2]*phi.wadIV[t*4-3]
+}
+
+#-------------------------------------------------  
+# 7.1.2 REPRODUCTION ##
+#Attributes specific reproductive success rate
+for(t in 1:n.occasions){
+rs.rrIV[t]<-rs.rr[t]
+}
+for(t in (n.occasions+1):sim.occasions){
+logit(rs.rrIV[t])<-mu.rs+beta3[1]*N.juneIV[t]+epsilon.rs[1,t]
+}
+
+#-------------------------------------------------  
+# 7.1.3 PROPORTION OF RELEASED INDIVIDUALS ##
+for (t in 1:n.occasions){
+rho.mIV[t]<-rho.m[t]
+rho.fIV[t]<-rho.f[t]
+}
+for (t in (n.occasions+1):sim.occasions){
+rho.mIV[t]<-Nprm.juneIV[t]/(Nprm.juneIV[t]+Nwmad.juneIV[t]+0.00000001)
+rho.fIV[t]<-Nprf.juneIV[t]/(Nprf.juneIV[t]+Nwfad.juneIV[t]+0.00000001)
+}
+
+#-------------------------------------------------  
+# 7.1.4 STANDARDIZED POPULATION SIZE ##
+#Mean(182.876) and sd (167.061) was obtained from the IPM without density effect
+#Every three month
+for(t in 1:(n.occasions-1)){
+N2IV[t*4]<-N2[t*4]
+N2IV[t*4-1]<-N2[t*4-1]
+N2IV[t*4-2]<-N2[t*4-2]
+N2IV[t*4-3]<-N2[t*4-3]
+}
+for(t in n.occasions:sim.occasions){
+N2IV[t*4]<-(Ntot.decIV[t]-182.876)/167.061
+N2IV[t*4-1]<-(Ntot.sptIV[t]-182.876)/167.061
+N2IV[t*4-2]<-(N.juneIV[t]-182.876)/167.061
+N2IV[t*4-3]<-(Ntot.marIV[t]-182.876)/167.061
+}
+
+#Every June
+N.juneIV[n.occasions]<-N.june[n.occasions]
+for (t in (n.occasions+1):sim.occasions){
+N.juneIV[t]<-(Nrelease.juneIV[t]+Nwmy.juneIV[t]+Nwmad.juneIV[t]+Nwfy.juneIV[t]+Nwfad.juneIV[t]-182.876)/167.061
+}
+
+#-------------------------------------------------  
+# 7.2 ECOLOGICAL STATE MODEL
+# 7.2.1 MARCH ##
+#The first release was in September 2008, thus number of individuals set 0 in March 2008. 
+Nnrm.mar1IV[n.occasions]<-Nnrm.mar1[n.occasions]
+Nnrm.mar2IV[n.occasions]<-Nnrm.mar2[n.occasions]
+Nnrm.mar3IV[n.occasions]<-Nnrm.mar3[n.occasions]
+Nnrm.marIV[n.occasions]<-Nnrm.mar[n.occasions]
+Nprm.marIV[n.occasions]<-Nprm.mar[n.occasions]
+Nnrf.mar1IV[n.occasions]<-Nnrf.mar1[n.occasions]
+Nnrf.mar2IV[n.occasions]<-Nnrf.mar2[n.occasions]
+Nnrf.mar3IV[n.occasions]<-Nnrf.mar3[n.occasions]
+Nnrf.marIV[n.occasions]<-Nnrf.mar[n.occasions]
+Nprf.marIV[n.occasions]<-Nprf.mar[n.occasions]
+Nwmj.marIV[n.occasions]<-Nwmj.mar[n.occasions]
+Nwmy.marIV[n.occasions]<-Nwmy.mar[n.occasions]
+Nwmad.marIV[n.occasions]<-Nwmad.mar[n.occasions]
+Nwfj.marIV[n.occasions]<-Nwfj.mar[n.occasions]
+Nwfy.marIV[n.occasions]<-Nwfy.mar[n.occasions]
+Nwfad.marIV[n.occasions]<-Nwfad.mar[n.occasions]
+
+
+#Population size change with mortality
+for (t in (n.occasions+1):sim.occasions){
+Nnrm.mar1IV[t]~dbin(phi.r1.winterIV[t-1],Nnrm.dec1IV[t-1])   #Newly released males released in previous June
+Nnrm.mar2IV[t]~dbin(phi.r1.winterIV[t-1],Nnrm.dec2IV[t-1])   #Newly released males released in previous September
+Nnrm.mar3IV[t]~dbin(phi.r1.winterIV[t-1],Nnrm.dec3IV[t-1])   #Newly released males released in previous March
+Nnrm.marIV[t]<-Nnrm.mar1IV[t]+Nnrm.mar2IV[t]+Nnrm.mar3IV[t]
+Nprm.marIV[t]~dbin(phi.r2.winterIV[t-1],Nprm.decIV[t-1])     #Previously released males
+Nnrf.mar1IV[t]~dbin(phi.r1.winterIV[t-1],Nnrf.dec1IV[t-1])   #Newly released females released in previous June
+Nnrf.mar2IV[t]~dbin(phi.r1.winterIV[t-1],Nnrf.dec2IV[t-1])   #Newly released females released in previous September
+Nnrf.mar3IV[t]~dbin(phi.r1.winterIV[t-1],Nnrf.dec3IV[t-1])   #Newly released females released in previous March
+Nnrf.marIV[t]<-Nnrf.mar1IV[t]+Nnrf.mar2IV[t]+Nnrf.mar3IV[t]
+Nprf.marIV[t]~dbin(phi.r2.winterIV[t-1],Nprf.decIV[t-1])     #Previously released females
+Nwmj.marIV[t]~dbin(phi.wj.winterIV[t-1],Nwmj.decIV[t-1])     #Wild-hatched juvenile males
+Nwmy.marIV[t]~dbin(phi.wad.winterIV[t-1],Nwmy.decIV[t-1])    #Wild-hatched yearling males
+Nwmad.marIV[t]~dbin(phi.wad.winterIV[t-1],Nwmad.decIV[t-1])  #Wild-hatched adult males
+Nwfj.marIV[t]~dbin(phi.wj.winterIV[t-1],Nwfj.decIV[t-1])     #Wild-hatched juvenile females
+Nwfy.marIV[t]~dbin(phi.wad.winterIV[t-1],Nwfy.decIV[t-1])    #Wild-hatched yearling females
+Nwfad.marIV[t]~dbin(phi.wad.winterIV[t-1],Nwfad.decIV[t-1])  #Wild-hatched adult females
+}
+
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.marIV[t]<-Nrelease.marIV[t]+Nwild.marIV[t]
+Nrelease.marIV[t]<-Nprf.marIV[t]+Nprm.marIV[t]+Nnrf.marIV[t]+Nnrm.marIV[t] Nwild.marIV[t]<-Nwmy.marIV[t]+Nwmad.marIV[t]+Nwfy.marIV[t]+Nwfad.marIV[t]
+}
+
+#-------------------------------------------------  
+# 7.2.2 JUNE ##
+#Reproduction
+#Number of pairs set 0 in 2008 and 2009. This is because there was no Crested Ibis in June 2008 and no breeding activity was observed in 2009. 
+NrrIV[n.occasions]<-Nrr[n.occasions]
+NrwIV[n.occasions]<-Nrw[n.occasions]
+NwwIV[n.occasions]<-Nww[n.occasions]
+
+#Pair formation
+for (t in (n.occasions+1):sim.occasions){
+NrrIV[t]<-rho.mIV[t]*Nprf.juneIV[t]                               #Number of released-released pair
+NrwIV[t]<-rho.mIV[t]* Nwfad.juneIV[t]+(1-rho.mIV[t])*Nprf.juneIV[t]   #Number of released-wild pair
+NwwIV[t]<-(1-rho.mIV[t])* Nwfad.juneIV[t]                          #Number of wild-wild pair
+}
+
+#Fledge
+Nwmj.juneIV[n.occasions]<- Nwmj.june[n.occasions]
+Nwfj.juneIV[n.occasions]<- Nwfj.june[n.occasions]
+Nwj.juneIV[n.occasions]<- Nwj.june[n.occasions]
+for(t in (n.occasions+1):sim.occasions){
+lambda.mIV[t]<-(NrrIV[t]*rs.rrIV[t]*f[t]+NrwIV[t]*rs.rw[t]*f[t]+NwwIV[t]*rs.ww[t]*f[t])*sr[t]
+lambda.fIV[t]<-(NrrIV[t]*rs.rrIV[t]*f[t]+NrwIV[t]*rs.rw[t]*f[t]+NwwIV[t]*rs.ww[t]*f[t])*(1-sr[t])
+Nwmj.juneIV[t]~dpois(lambda.mIV[t])
+Nwfj.juneIV[t]~dpois(lambda.fIV[t])
+Nwj.juneIV[t]<- Nwmj.juneIV[t]+Nwfj.juneIV[t]
+}
+
+#Population size change with mortality
+for (t in 1:(n.occasions-1)){
+Nnrm.juneIV[t] <- Nnrm.june[t] 
+Nprm.june1IV[t]<- Nprm.june1[t] 
+Nprm.june2IV[t]<- Nprm.june2[t] 
+Nprm.june3IV[t]<- Nprm.june3[t] 
+Nprm.june4IV[t]<- Nprm.june4[t] 
+Nprm.juneIV[t]<- Nprm.june[t] 
+Nnrf.juneIV[t] <- Nnrf.june[t] 
+Nprf.june1IV[t]<- Nprf.june1[t] 
+Nprf.june2IV[t]<- Nprf.june2[t] 
+Nprf.june3IV[t]<- Nprf.june3[t] 
+Nprf.june4IV[t]<- Nprf.june4[t] 
+Nprf.juneIV[t]<- Nprf.june[t] 
+Nwmy.juneIV[t]<-Nwmy.june[t]
+Nwmad.juneIV[t]<-Nwmad.june[t]
+Nwfy.juneIV[t]<-Nwfy.june[t]
+Nwfad.juneIV[t]<-Nwfad.june[t]
+}
+
+for (t in n.occasions:sim.occasions){
+Nnrm.juneIV[t] <-0
+Nnrf.juneIV[t] <-0
+Nprm.june1IV[t]~dbin(phi.r1.springIV[t],Nnrm.mar1IV[t])      #Previously released males released in previous June
+Nprm.june2IV[t]~dbin(phi.r1.springIV[t],Nnrm.mar2IV[t])      #Previously released males released in previous September
+Nprm.june3IV[t]~dbin(phi.r2.springIV[t],Nnrm.mar3IV[t])      #Previously released males released in previous March
+Nprm.june4IV[t]~dbin(phi.r2.springIV[t],Nprm.marIV[t])       #Previously released males
+Nprm.juneIV[t]<-Nprm.june1IV[t]+Nprm.june2IV[t]+Nprm.june3IV[t]+Nprm.june4IV[t]
+
+Nprf.june1IV[t]~dbin(phi.r1.springIV[t],Nnrf.mar1IV[t])      #Previously released males released in previous June
+Nprf.june2IV[t]~dbin(phi.r1.springIV[t],Nnrf.mar2IV[t])      #Previously released males released in previous September
+Nprf.june3IV[t]~dbin(phi.r2.springIV[t],Nnrf.mar3IV[t])      #Previously released males released in previous March
+Nprf.june4IV[t]~dbin(phi.r2.springIV[t],Nprf.marIV[t])       #Previously released males
+Nprf.juneIV[t]<-Nprf.june1IV[t]+Nprf.june2IV[t]+Nprf.june3IV[t]+Nprf.june4IV[t]
+
+Nwmy.juneIV[t]~dbin(phi.wj.springIV[t],Nwmj.marIV[t])
+Nwmad.june1IV[t]~dbin(phi.wad.springIV[t],Nwmy.marIV[t])   #Wild-hatched yearling males
+Nwmad.june2IV[t]~dbin(phi.wad.springIV[t],Nwmad.marIV[t]) #Wild-hatched adult males
+Nwmad.juneIV[t]<-Nwmad.june1IV[t]+Nwmad.june2IV[t]
+Nwfy.juneIV[t]~dbin(phi.wj.springIV[t],Nwfj.marIV[t])
+Nwfad.june1IV[t]~dbin(phi.wad.springIV[t],Nwfy.marIV[t])   #Wild-hatched yearling males
+Nwfad.june2IV[t]~dbin(phi.wad.springIV[t],Nwfad.marIV[t]) #Wild-hatched adult males
+Nwfad.juneIV[t]<-Nwfad.june1IV[t]+Nwfad.june2IV[t]
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.juneIV[t]<-Nrelease.juneIV[t]+Nwild.juneIV[t]
+Nrelease.juneIV[t]<-Nprf.juneIV[t]+Nprm.juneIV[t]+Rm1.juneIV[t]+Rf1.juneIV[t]
+Nwild.juneIV[t]<-Nwmj.juneIV[t]+Nwmy.juneIV[t]+Nwmad.juneIV[t]+Nwfj.juneIV[t]+Nwfy.juneIV[t]+Nwfad.juneIV[t]
+}
+
+#-------------------------------------------------  
+# 7.2.3 SEPTEMBER ##
+#Population size change with mortality
+for (t in n.occasions:sim.occasions){
+Nnrm.spt1IV[t]~dbin(phi.r1.summerIV[t], Rm1.juneIV[t])     #Newly released males released in June
+Nnrm.spt3IV[t]~dbin(phi.r1.summerIV[t], Nnrm.juneIV[t])    #Newly released males released in previous March
+Nnrm.sptIV[t]<-Nnrm.spt1IV[t]+Nnrm.spt3IV[t]
+Nprm.spt1IV[t]~dbin(phi.r2.summerIV[t], Nprm.june1IV[t])   #Previously released males released in previous June
+Nprm.spt2IV[t]~dbin(phi.r1.summerIV[t], Nprm.june2IV[t])   #Previously released males released in previous September
+Nprm.spt3IV[t]~dbin(phi.r2.summerIV[t], Nprm.june3IV[t])   #Previously released males released in previous March
+Nprm.spt4IV[t]~dbin(phi.r2.summerIV[t], Nprm.june4IV[t])   #Previously released males
+Nprm.sptIV[t]<-Nprm.spt1IV[t]+Nprm.spt2IV[t]+Nprm.spt3IV[t]+Nprm.spt4IV[t]
+Nnrf.spt1IV[t]~dbin(phi.r1.summerIV[t], Rf1.juneIV[t])     #Newly released males released in June
+Nnrf.spt3IV[t]~dbin(phi.r1.summerIV[t], Nnrf.juneIV[t])    #Newly released males released in previous March
+Nnrf.sptIV[t]<-Nnrf.spt1IV[t]+Nnrf.spt3IV[t]
+Nprf.spt1IV[t]~dbin(phi.r2.summerIV[t], Nprf.june1IV[t])   #Previously released males released in previous June
+Nprf.spt2IV[t]~dbin(phi.r1.summerIV[t], Nprf.june2IV[t])   #Previously released males released in previous September
+Nprf.spt3IV[t]~dbin(phi.r2.summerIV[t], Nprf.june3IV[t])   #Previously released males released in previous March
+Nprf.spt4IV[t]~dbin(phi.r2.summerIV[t], Nprf.june4IV[t])   #Previously released males
+Nprf.sptIV[t]<-Nprf.spt1IV[t]+Nprf.spt2IV[t]+Nprf.spt3IV[t]+Nprf.spt4IV[t]
+Nwmj.sptIV[t]~dbin(phi.wj.summerIV[t], Nwmj.juneIV[t])    #Wild-hatched juvenile males
+Nwmy.sptIV[t]~dbin(phi.wad.summerIV[t], Nwmy.juneIV[t])   #Wild-hatched yearling males
+Nwmad.sptIV[t]~dbin(phi.wad.summerIV[t], Nwmad.juneIV[t]) #Wild-hatched adult males
+Nwfj.sptIV[t]~dbin(phi.wj.summerIV[t], Nwfj.juneIV[t])    #Wild-hatched juvenile females
+Nwfy.sptIV[t]~dbin(phi.wad.summerIV[t], Nwfy.juneIV[t])   #Wild-hatched yearling females
+Nwfad.sptIV[t]~dbin(phi.wad.summerIV[t], Nwfad.juneIV[t]) #Wild-hatched adult females
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.sptIV[t]<-Nrelease.sptIV[t]+Nwild.sptIV[t]
+Nrelease.sptIV[t]<-Nnrf.sptIV[t]+Nprf.sptIV[t]+Nnrm.sptIV[t]+Nprm.sptIV[t] Nwild.sptIV[t]<-Nwmj.sptIV[t]+Nwmy.sptIV[t]+Nwmad.sptIV[t]+Nwfj.sptIV[t]+Nwfy.sptIV 
+[t]+Nwfad.sptIV[t]
+}
+
+#-------------------------------------------------  
+# 7.2.4 DECEMBER ##
+#Population size change with mortality
+for (t in n.occasions:sim.occasions){
+Nnrm.dec1IV[t]~dbin(phi.r1.autumnIV[t], Nnrm.spt1IV[t])    #Newly released males in June
+Nnrm.dec2IV[t]~dbin(phi.r1.autumnIV[t], Rm1.sptIV[t])      #Newly released males in September
+Nnrm.dec3IV[t]~dbin(phi.r1.autumnIV[t], Nnrm.spt3IV[t])    #Newly released males in March
+Nnrm.decIV[t]<-Nnrm.dec1IV[t]+Nnrm.dec2IV[t]+Nnrm.dec3IV[t]
+Nprm.decIV[t]~dbin(phi.r2.autumnIV[t], Nprm.sptIV[t])      #Previously released males
+Nnrf.dec1IV[t]~dbin(phi.r1.autumnIV[t], Nnrf.spt1IV[t])    #Newly released males in June
+Nnrf.dec2IV[t]~dbin(phi.r1.autumnIV[t], Rf1.sptIV[t])      #Newly released males in September
+Nnrf.dec3IV[t]~dbin(phi.r1.autumnIV[t], Nnrf.spt3IV[t])    #Newly released males in March
+Nnrf.decIV[t]<-Nnrf.dec1IV[t]+Nnrf.dec2IV[t]+Nnrf.dec3IV[t]
+Nprf.decIV[t]~dbin(phi.r2.autumnIV[t], Nprf.sptIV[t])      #Previously released males
+Nwmj.decIV[t]~dbin(phi.wj.autumnIV[t], Nwmj.sptIV[t])      #Wild-hatched juvenile males
+Nwmy.decIV[t]~dbin(phi.wad.autumnIV[t], Nwmy.sptIV[t])     #Wild-hatched yearling males
+Nwmad.decIV[t]~dbin(phi.wad.autumnIV[t], Nwmad.sptIV[t])   #Wild-hatched adult males
+Nwfj.decIV[t]~dbin(phi.wj.autumnIV[t], Nwfj.sptIV[t])      #Wild-hatched juvenile females
+Nwfy.decIV[t]~dbin(phi.wad.autumnIV[t], Nwfy.sptIV[t])     #Wild-hatched yearling females
+Nwfad.decIV[t]~dbin(phi.wad.autumnIV[t], Nwfad.sptIV[t])   #Wild-hatched adult females
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.decIV[t]<- Nrelease.decIV[t]+Nwild.decIV[t]
+Nrelease.decIV[t]<-Nnrm.decIV[t]+Nprm.decIV[t]+Nnrf.decIV[t]+Nprf.decIV[t]
+Nwild.decIV[t]<-Nwmj.decIV[t]+Nwmy.decIV[t]+Nwmad.decIV[t]+Nwfj.decIV[t]+Nwfy.decIV[t]+Nwfad.decIV[t]
+}
+
+
+
+#-------------------------------------------------  
+# 7.2.5 MATURE INDIVIDUALS IN JUNE ##
+#By subtracting the number of mature individuals from the number of surviving individuals,
+#we calculate the number of individuals that have not matured.
+#To avoid errors, if the result is negative, the value is fixed to 0.
+for (t in 1:sim.occasions){
+Nf.imIV[t]<-ifelse(Nprf.juneIV[t]-NfmatIV[t]>0,Nprf.juneIV[t]-NfmatIV[t],0)
+Nm.imIV[t]<-ifelse(Nprm.juneIV[t]-NmmatIV[t]>0,Nprm.juneIV[t]-NmmatIV[t],0)
+}
+
+#Derived parameter theta
+#Theta is the probability that an individual will breed successfully and that at least one of fledgeling will survive for two years.
+for (t in 5:sim.occasions){
+theta.rrIV[t]<-rs.rrIV[t-2]*(1-(1-a.phi.wjIV[t-2]*a.phi.wadIV[t-1])^f[t-2]) #for released-released pair
+}
+
+#Likelihood for newly mature individuals
+female.matureIV[1]<-0
+female.matureIV[2] <-0
+female.matureIV[3] <-0
+female.matureIV[4] <-0
+male.matureIV[1] <-0
+male.matureIV[2] <-0
+male.matureIV[3] <-0
+male.matureIV[4] <-0
+for (t in 5:sim.occasions){
+female.matureIV[t]<-a.phi.r2IV[t-1]*a.phi.r2IV[t-2]*Nf.imIV[t-2]*(rho.mIV[t-2]*theta.rrIV[t]+(1-rho.mIV[t-2])*theta.rw[t])
+male.matureIV[t]<-a.phi.r2IV[t-1]*a.phi.r2IV[t-2]*Nm.imIV[t-2]*(rho.fIV[t-2]*theta.rrIV[t]+(1-rho.fIV[t-2])*theta.rw[t])
+}
+for (t in 1:sim.occasions){
+Nfmat1IV[t]~dpois(female.matureIV[t])
+Nmmat1IV[t]~dpois(male.matureIV[t])
+}
+
+#Population size change with mortality
+Nfmat2IV[1]<-0
+Nmmat2IV[1]<-0
+for (t in 2:sim.occasions){
+Nfmat2IV[t]~dbin(a.phi.r2IV[t-1],NfmatIV[t-1])
+Nmmat2IV[t]~dbin(a.phi.r2IV[t-1],NmmatIV[t-1])
+}
+
+#Calcurate number of mature individuals
+for (t in 1:sim.occasions){
+NmmatIV[t]<-Nmmat1IV[t]+Nmmat2IV[t]
+NfmatIV[t]<-Nfmat1IV[t]+Nfmat2IV[t]
+Nmat.femaleIV[t]<-NfmatIV[t]+Nwfad.juneIV[t]
+NmatureIV[t]<-Nwmad.juneIV[t]+Nwfad.juneIV[t]+Nfmat1IV[t]+Nfmat2IV[t]+Nmmat1IV[t]+Nmmat2IV[t]
+}
+
+
+#-------------------------------------------------  
+# 8. SenarioV 30 indViduals in June for next 15 years
+#-------------------------------------------------
+#-------------------------------------------------  
+# 8. SenarioV 30 indViduals in June
+#-------------------------------------------------
+# 8.1 DERVED PARAMETERS
+#For density-independent parameters, the values are the same as in Scenario I. 
+#For density-dependent parameters,the values are unique to Scenario V.
+
+# 8.1.1 SURVVAL RATE ##
+for(s in 1:(n.season-1)){
+phi.r1V[s]<-phi.r1[s]
+phi.r2V[s]<-phi.r2[s]
+phi.wjV[s]<-phi.wj[s]
+phi.wadV[s]<-phi.wad[s]
+}
+for(s in n.season:(4*sim.occasions)){
+logit(phi.r1V[s])<-mu.r+beta1[1,season[s]]*N2V[s]+alpha2[season[s]]+epsilon.r[1,s]
+logit(phi.r2V[s])<-mu.r+beta1[2,season[s]]*N2V[s]+alpha1[2]+alpha2[season[s]]+epsilon.r[2,s]
+logit(phi.wjV[s])<-mu.w+beta2[1,season[s]]*N2V[s]+epsilon.w[1,s]
+logit(phi.wadV[s])<-mu.w+beta2[2,season[s]]*N2V[s]+alpha3[2]+epsilon.w[2,s]
+}
+
+#Seasonal survVal: changing names just for easy understand
+for(t in n.occasions:sim.occasions){
+phi.r1.springV[t]<-phi.r1V[t*4-3]
+phi.r1.summerV[t]<-phi.r1V[t*4-2]
+phi.r1.autumnV[t]<-phi.r1V[t*4-1]
+phi.r1.winterV[t]<-phi.r1V[t*4]
+phi.r2.springV[t]<-phi.r2V[t*4-3]
+phi.r2.summerV[t]<-phi.r2V[t*4-2]
+phi.r2.autumnV[t]<-phi.r2V[t*4-1]
+phi.r2.winterV[t]<-phi.r2V[t*4]
+phi.wj.springV[t]<-phi.wjV[t*4-3]
+phi.wj.summerV[t]<-phi.wjV[t*4-2]
+phi.wj.autumnV[t]<-phi.wjV[t*4-1]
+phi.wj.winterV[t]<-phi.wjV[t*4]
+phi.wad.springV[t]<-phi.wadV[t*4-3]
+phi.wad.summerV[t]<-phi.wadV[t*4-2]
+phi.wad.autumnV[t]<-phi.wadV[t*4-1]
+phi.wad.winterV[t]<-phi.wadV[t*4]
+}
+
+#Annual survVal
+for(t in 1:(n.occasions-1)){
+a.phi.r1V[t]<-a.phi.r1[t]
+a.phi.r2V[t]<-a.phi.r2[t]
+a.phi.wjV[t]<-a.phi.wj[t]
+a.phi.wadV[t]<-a.phi.wad[t]
+}
+for(t in n.occasions:(sim.occasions-1)){
+a.phi.r1V[t]<-phi.r1V[t*4]*phi.r1V[t*4-1]*phi.r1V[t*4-2]*phi.r1V[t*4-3]
+a.phi.r2V[t]<- phi.r2V[t*4]*phi.r2V[t*4-1]*phi.r2V[t*4-2]*phi.r2V[t*4-3]
+a.phi.wjV[t]<-phi.wjV[t*4]*phi.wjV[t*4-1]*phi.wjV[t*4-2]*phi.wjV[t*4-3]
+a.phi.wadV[t]<- phi.wadV[t*4]*phi.wadV[t*4-1]*phi.wadV[t*4-2]*phi.wadV[t*4-3]
+}
+
+#-------------------------------------------------  
+# 8.1.2 REPRODUCTION ##
+#Attributes specific reproductVe success rate
+for(t in 1:n.occasions){
+rs.rrV[t]<-rs.rr[t]
+}
+for(t in (n.occasions+1):sim.occasions){
+logit(rs.rrV[t])<-mu.rs+beta3[1]*N.juneV[t]+epsilon.rs[1,t]
+}
+
+#-------------------------------------------------  
+# 8.1.3 PROPORTION OF RELEASED INDVIDUALS ##
+for (t in 1:n.occasions){
+rho.mV[t]<-rho.m[t]
+rho.fV[t]<-rho.f[t]
+}
+for (t in (n.occasions+1):sim.occasions){
+rho.mV[t]<-Nprm.juneV[t]/(Nprm.juneV[t]+Nwmad.juneV[t]+0.00000001)
+rho.fV[t]<-Nprf.juneV[t]/(Nprf.juneV[t]+Nwfad.juneV[t]+0.00000001)
+}
+
+#-------------------------------------------------  
+# 8.1.4 STANDARDIZED POPULATION SIZE ##
+#Mean(182.876) and sd (167.061) was obtained from the IPM without density effect
+#Every three month
+for(t in 1:(n.occasions-1)){
+N2V[t*4]<-N2[t*4]
+N2V[t*4-1]<-N2[t*4-1]
+N2V[t*4-2]<-N2[t*4-2]
+N2V[t*4-3]<-N2[t*4-3]
+}
+for(t in n.occasions:sim.occasions){
+N2V[t*4]<-(Ntot.decV[t]-182.876)/167.061
+N2V[t*4-1]<-(Ntot.sptV[t]-182.876)/167.061
+N2V[t*4-2]<-(N.juneV[t]-182.876)/167.061
+N2V[t*4-3]<-(Ntot.marV[t]-182.876)/167.061
+}
+
+#Every June
+N.juneV[n.occasions]<-N.june[n.occasions]
+for (t in (n.occasions+1):sim.occasions){
+N.juneV[t]<-(Nrelease.juneV[t]+Nwmy.juneV[t]+Nwmad.juneV[t]+Nwfy.juneV[t]+Nwfad.juneV[t]-182.876)/167.061
+}
+
+#-------------------------------------------------  
+# 8.2 ECOLOGICAL STATE MODEL
+# 8.2.1 MARCH ##
+#The first release was in September 2008, thus number of indViduals set 0 in March 2008. 
+Nnrm.mar1V[n.occasions]<-Nnrm.mar1[n.occasions]
+Nnrm.mar2V[n.occasions]<-Nnrm.mar2[n.occasions]
+Nnrm.mar3V[n.occasions]<-Nnrm.mar3[n.occasions]
+Nnrm.marV[n.occasions]<-Nnrm.mar[n.occasions]
+Nprm.marV[n.occasions]<-Nprm.mar[n.occasions]
+Nnrf.mar1V[n.occasions]<-Nnrf.mar1[n.occasions]
+Nnrf.mar2V[n.occasions]<-Nnrf.mar2[n.occasions]
+Nnrf.mar3V[n.occasions]<-Nnrf.mar3[n.occasions]
+Nnrf.marV[n.occasions]<-Nnrf.mar[n.occasions]
+Nprf.marV[n.occasions]<-Nprf.mar[n.occasions]
+Nwmj.marV[n.occasions]<-Nwmj.mar[n.occasions]
+Nwmy.marV[n.occasions]<-Nwmy.mar[n.occasions]
+Nwmad.marV[n.occasions]<-Nwmad.mar[n.occasions]
+Nwfj.marV[n.occasions]<-Nwfj.mar[n.occasions]
+Nwfy.marV[n.occasions]<-Nwfy.mar[n.occasions]
+Nwfad.marV[n.occasions]<-Nwfad.mar[n.occasions]
+
+
+#Population size change with mortality
+for (t in (n.occasions+1):sim.occasions){
+Nnrm.mar1V[t]~dbin(phi.r1.winterV[t-1],Nnrm.dec1V[t-1])   #Newly released males released in previous June
+Nnrm.mar2V[t]~dbin(phi.r1.winterV[t-1],Nnrm.dec2V[t-1])   #Newly released males released in previous September
+Nnrm.mar3V[t]~dbin(phi.r1.winterV[t-1],Nnrm.dec3V[t-1])   #Newly released males released in previous March
+Nnrm.marV[t]<-Nnrm.mar1V[t]+Nnrm.mar2V[t]+Nnrm.mar3V[t]
+Nprm.marV[t]~dbin(phi.r2.winterV[t-1],Nprm.decV[t-1])     #Previously released males
+Nnrf.mar1V[t]~dbin(phi.r1.winterV[t-1],Nnrf.dec1V[t-1])   #Newly released females released in previous June
+Nnrf.mar2V[t]~dbin(phi.r1.winterV[t-1],Nnrf.dec2V[t-1])   #Newly released females released in previous September
+Nnrf.mar3V[t]~dbin(phi.r1.winterV[t-1],Nnrf.dec3V[t-1])   #Newly released females released in previous March
+Nnrf.marV[t]<-Nnrf.mar1V[t]+Nnrf.mar2V[t]+Nnrf.mar3V[t]
+Nprf.marV[t]~dbin(phi.r2.winterV[t-1],Nprf.decV[t-1])     #Previously released females
+Nwmj.marV[t]~dbin(phi.wj.winterV[t-1],Nwmj.decV[t-1])     #Wild-hatched juvenile males
+Nwmy.marV[t]~dbin(phi.wad.winterV[t-1],Nwmy.decV[t-1])    #Wild-hatched yearling males
+Nwmad.marV[t]~dbin(phi.wad.winterV[t-1],Nwmad.decV[t-1])  #Wild-hatched adult males
+Nwfj.marV[t]~dbin(phi.wj.winterV[t-1],Nwfj.decV[t-1])     #Wild-hatched juvenile females
+Nwfy.marV[t]~dbin(phi.wad.winterV[t-1],Nwfy.decV[t-1])    #Wild-hatched yearling females
+Nwfad.marV[t]~dbin(phi.wad.winterV[t-1],Nwfad.decV[t-1])  #Wild-hatched adult females
+}
+
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.marV[t]<-Nrelease.marV[t]+Nwild.marV[t]
+Nrelease.marV[t]<-Nprf.marV[t]+Nprm.marV[t]+Nnrf.marV[t]+Nnrm.marV[t] Nwild.marV[t]<-Nwmy.marV[t]+Nwmad.marV[t]+Nwfy.marV[t]+Nwfad.marV[t]
+}
+
+#-------------------------------------------------  
+# 8.2.2 JUNE ##
+#Reproduction
+#Number of pairs set 0 in 2008 and 2009. This is because there was no Crested Ibis in June 2008 and no breeding actVity was observed in 2009. 
+NrrV[n.occasions]<-Nrr[n.occasions]
+NrwV[n.occasions]<-Nrw[n.occasions]
+NwwV[n.occasions]<-Nww[n.occasions]
+
+#Pair formation
+for (t in (n.occasions+1):sim.occasions){
+NrrV[t]<-rho.mV[t]*Nprf.juneV[t]                               #Number of released-released pair
+NrwV[t]<-rho.mV[t]* Nwfad.juneV[t]+(1-rho.mV[t])*Nprf.juneV[t]   #Number of released-wild pair
+NwwV[t]<-(1-rho.mV[t])* Nwfad.juneV[t]                          #Number of wild-wild pair
+}
+
+#Fledge
+Nwmj.juneV[n.occasions]<- Nwmj.june[n.occasions]
+Nwfj.juneV[n.occasions]<- Nwfj.june[n.occasions]
+Nwj.juneV[n.occasions]<- Nwj.june[n.occasions]
+for(t in (n.occasions+1):sim.occasions){
+lambda.mV[t]<-(NrrV[t]*rs.rrV[t]*f[t]+NrwV[t]*rs.rw[t]*f[t]+NwwV[t]*rs.ww[t]*f[t])*sr[t]
+lambda.fV[t]<-(NrrV[t]*rs.rrV[t]*f[t]+NrwV[t]*rs.rw[t]*f[t]+NwwV[t]*rs.ww[t]*f[t])*(1-sr[t])
+Nwmj.juneV[t]~dpois(lambda.mV[t])
+Nwfj.juneV[t]~dpois(lambda.fV[t])
+Nwj.juneV[t]<- Nwmj.juneV[t]+Nwfj.juneV[t]
+}
+
+#Population size change with mortality
+for (t in 1:(n.occasions-1)){
+Nnrm.juneV[t] <- Nnrm.june[t] 
+Nprm.june1V[t]<- Nprm.june1[t] 
+Nprm.june2V[t]<- Nprm.june2[t] 
+Nprm.june3V[t]<- Nprm.june3[t] 
+Nprm.june4V[t]<- Nprm.june4[t] 
+Nprm.juneV[t]<- Nprm.june[t] 
+Nnrf.juneV[t] <- Nnrf.june[t] 
+Nprf.june1V[t]<- Nprf.june1[t] 
+Nprf.june2V[t]<- Nprf.june2[t] 
+Nprf.june3V[t]<- Nprf.june3[t] 
+Nprf.june4V[t]<- Nprf.june4[t] 
+Nprf.juneV[t]<- Nprf.june[t] 
+Nwmy.juneV[t]<-Nwmy.june[t]
+Nwmad.juneV[t]<-Nwmad.june[t]
+Nwfy.juneV[t]<-Nwfy.june[t]
+Nwfad.juneV[t]<-Nwfad.june[t]
+}
+
+for (t in n.occasions:sim.occasions){
+Nnrm.juneV[t] <-0
+Nnrf.juneV[t] <-0
+Nprm.june1V[t]~dbin(phi.r1.springV[t],Nnrm.mar1V[t])      #Previously released males released in previous June
+Nprm.june2V[t]~dbin(phi.r1.springV[t],Nnrm.mar2V[t])      #Previously released males released in previous September
+Nprm.june3V[t]~dbin(phi.r2.springV[t],Nnrm.mar3V[t])      #Previously released males released in previous March
+Nprm.june4V[t]~dbin(phi.r2.springV[t],Nprm.marV[t])       #Previously released males
+Nprm.juneV[t]<-Nprm.june1V[t]+Nprm.june2V[t]+Nprm.june3V[t]+Nprm.june4V[t]
+
+Nprf.june1V[t]~dbin(phi.r1.springV[t],Nnrf.mar1V[t])      #Previously released males released in previous June
+Nprf.june2V[t]~dbin(phi.r1.springV[t],Nnrf.mar2V[t])      #Previously released males released in previous September
+Nprf.june3V[t]~dbin(phi.r2.springV[t],Nnrf.mar3V[t])      #Previously released males released in previous March
+Nprf.june4V[t]~dbin(phi.r2.springV[t],Nprf.marV[t])       #Previously released males
+Nprf.juneV[t]<-Nprf.june1V[t]+Nprf.june2V[t]+Nprf.june3V[t]+Nprf.june4V[t]
+
+Nwmy.juneV[t]~dbin(phi.wj.springV[t],Nwmj.marV[t])
+Nwmad.june1V[t]~dbin(phi.wad.springV[t],Nwmy.marV[t])   #Wild-hatched yearling males
+Nwmad.june2V[t]~dbin(phi.wad.springV[t],Nwmad.marV[t]) #Wild-hatched adult males
+Nwmad.juneV[t]<-Nwmad.june1V[t]+Nwmad.june2V[t]
+Nwfy.juneV[t]~dbin(phi.wj.springV[t],Nwfj.marV[t])
+Nwfad.june1V[t]~dbin(phi.wad.springV[t],Nwfy.marV[t])   #Wild-hatched yearling males
+Nwfad.june2V[t]~dbin(phi.wad.springV[t],Nwfad.marV[t]) #Wild-hatched adult males
+Nwfad.juneV[t]<-Nwfad.june1V[t]+Nwfad.june2V[t]
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.juneV[t]<-Nrelease.juneV[t]+Nwild.juneV[t]
+Nrelease.juneV[t]<-Nprf.juneV[t]+Nprm.juneV[t]+Rm1.juneV[t]+Rf1.juneV[t]
+Nwild.juneV[t]<-Nwmj.juneV[t]+Nwmy.juneV[t]+Nwmad.juneV[t]+Nwfj.juneV[t]+Nwfy.juneV[t]+Nwfad.juneV[t]
+}
+
+#-------------------------------------------------  
+# 8.2.3 SEPTEMBER ##
+#Population size change with mortality
+for (t in n.occasions:sim.occasions){
+Nnrm.spt1V[t]~dbin(phi.r1.summerV[t], Rm1.juneV[t])     #Newly released males released in June
+Nnrm.spt3V[t]~dbin(phi.r1.summerV[t], Nnrm.juneV[t])    #Newly released males released in previous March
+Nnrm.sptV[t]<-Nnrm.spt1V[t]+Nnrm.spt3V[t]
+Nprm.spt1V[t]~dbin(phi.r2.summerV[t], Nprm.june1V[t])   #Previously released males released in previous June
+Nprm.spt2V[t]~dbin(phi.r1.summerV[t], Nprm.june2V[t])   #Previously released males released in previous September
+Nprm.spt3V[t]~dbin(phi.r2.summerV[t], Nprm.june3V[t])   #Previously released males released in previous March
+Nprm.spt4V[t]~dbin(phi.r2.summerV[t], Nprm.june4V[t])   #Previously released males
+Nprm.sptV[t]<-Nprm.spt1V[t]+Nprm.spt2V[t]+Nprm.spt3V[t]+Nprm.spt4V[t]
+Nnrf.spt1V[t]~dbin(phi.r1.summerV[t], Rf1.juneV[t])     #Newly released males released in June
+Nnrf.spt3V[t]~dbin(phi.r1.summerV[t], Nnrf.juneV[t])    #Newly released males released in previous March
+Nnrf.sptV[t]<-Nnrf.spt1V[t]+Nnrf.spt3V[t]
+Nprf.spt1V[t]~dbin(phi.r2.summerV[t], Nprf.june1V[t])   #Previously released males released in previous June
+Nprf.spt2V[t]~dbin(phi.r1.summerV[t], Nprf.june2V[t])   #Previously released males released in previous September
+Nprf.spt3V[t]~dbin(phi.r2.summerV[t], Nprf.june3V[t])   #Previously released males released in previous March
+Nprf.spt4V[t]~dbin(phi.r2.summerV[t], Nprf.june4V[t])   #Previously released males
+Nprf.sptV[t]<-Nprf.spt1V[t]+Nprf.spt2V[t]+Nprf.spt3V[t]+Nprf.spt4V[t]
+Nwmj.sptV[t]~dbin(phi.wj.summerV[t], Nwmj.juneV[t])    #Wild-hatched juvenile males
+Nwmy.sptV[t]~dbin(phi.wad.summerV[t], Nwmy.juneV[t])   #Wild-hatched yearling males
+Nwmad.sptV[t]~dbin(phi.wad.summerV[t], Nwmad.juneV[t]) #Wild-hatched adult males
+Nwfj.sptV[t]~dbin(phi.wj.summerV[t], Nwfj.juneV[t])    #Wild-hatched juvenile females
+Nwfy.sptV[t]~dbin(phi.wad.summerV[t], Nwfy.juneV[t])   #Wild-hatched yearling females
+Nwfad.sptV[t]~dbin(phi.wad.summerV[t], Nwfad.juneV[t]) #Wild-hatched adult females
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.sptV[t]<-Nrelease.sptV[t]+Nwild.sptV[t]
+Nrelease.sptV[t]<-Nnrf.sptV[t]+Nprf.sptV[t]+Nnrm.sptV[t]+Nprm.sptV[t] Nwild.sptV[t]<-Nwmj.sptV[t]+Nwmy.sptV[t]+Nwmad.sptV[t]+Nwfj.sptV[t]+Nwfy.sptV 
+[t]+Nwfad.sptV[t]
+}
+
+#-------------------------------------------------  
+# 8.2.4 DECEMBER ##
+#Population size change with mortality
+for (t in n.occasions:sim.occasions){
+Nnrm.dec1V[t]~dbin(phi.r1.autumnV[t], Nnrm.spt1V[t])    #Newly released males in June
+Nnrm.dec2V[t]~dbin(phi.r1.autumnV[t], Rm1.sptV[t])      #Newly released males in September
+Nnrm.dec3V[t]~dbin(phi.r1.autumnV[t], Nnrm.spt3V[t])    #Newly released males in March
+Nnrm.decV[t]<-Nnrm.dec1V[t]+Nnrm.dec2V[t]+Nnrm.dec3V[t]
+Nprm.decV[t]~dbin(phi.r2.autumnV[t], Nprm.sptV[t])      #Previously released males
+Nnrf.dec1V[t]~dbin(phi.r1.autumnV[t], Nnrf.spt1V[t])    #Newly released males in June
+Nnrf.dec2V[t]~dbin(phi.r1.autumnV[t], Rf1.sptV[t])      #Newly released males in September
+Nnrf.dec3V[t]~dbin(phi.r1.autumnV[t], Nnrf.spt3V[t])    #Newly released males in March
+Nnrf.decV[t]<-Nnrf.dec1V[t]+Nnrf.dec2V[t]+Nnrf.dec3V[t]
+Nprf.decV[t]~dbin(phi.r2.autumnV[t], Nprf.sptV[t])      #Previously released males
+Nwmj.decV[t]~dbin(phi.wj.autumnV[t], Nwmj.sptV[t])      #Wild-hatched juvenile males
+Nwmy.decV[t]~dbin(phi.wad.autumnV[t], Nwmy.sptV[t])     #Wild-hatched yearling males
+Nwmad.decV[t]~dbin(phi.wad.autumnV[t], Nwmad.sptV[t])   #Wild-hatched adult males
+Nwfj.decV[t]~dbin(phi.wj.autumnV[t], Nwfj.sptV[t])      #Wild-hatched juvenile females
+Nwfy.decV[t]~dbin(phi.wad.autumnV[t], Nwfy.sptV[t])     #Wild-hatched yearling females
+Nwfad.decV[t]~dbin(phi.wad.autumnV[t], Nwfad.sptV[t])   #Wild-hatched adult females
+}
+
+#Calcurate population size with new release
+for (t in n.occasions:sim.occasions){
+Ntot.decV[t]<- Nrelease.decV[t]+Nwild.decV[t]
+Nrelease.decV[t]<-Nnrm.decV[t]+Nprm.decV[t]+Nnrf.decV[t]+Nprf.decV[t]
+Nwild.decV[t]<-Nwmj.decV[t]+Nwmy.decV[t]+Nwmad.decV[t]+Nwfj.decV[t]+Nwfy.decV[t]+Nwfad.decV[t]
+}
+
+
+
+#-------------------------------------------------  
+# 8.2.5 MATURE INDVIDUALS IN JUNE ##
+#By subtracting the number of mature indViduals from the number of survVing indViduals,
+#we calculate the number of indViduals that have not matured.
+#To avoid errors, if the result is negatVe, the value is fixed to 0.
+for (t in 1:sim.occasions){
+Nf.imV[t]<-ifelse(Nprf.juneV[t]-NfmatV[t]>0,Nprf.juneV[t]-NfmatV[t],0)
+Nm.imV[t]<-ifelse(Nprm.juneV[t]-NmmatV[t]>0,Nprm.juneV[t]-NmmatV[t],0)
+}
+
+#DerVed parameter theta
+#Theta is the probability that an indVidual will breed successfully and that at least one of fledgeling will survVe for two years.
+for (t in 5:sim.occasions){
+theta.rrV[t]<-rs.rrV[t-2]*(1-(1-a.phi.wjV[t-2]*a.phi.wadV[t-1])^f[t-2]) #for released-released pair
+}
+
+#Likelihood for newly mature indViduals
+female.matureV[1]<-0
+female.matureV[2] <-0
+female.matureV[3] <-0
+female.matureV[4] <-0
+male.matureV[1] <-0
+male.matureV[2] <-0
+male.matureV[3] <-0
+male.matureV[4] <-0
+for (t in 5:sim.occasions){
+female.matureV[t]<-a.phi.r2V[t-1]*a.phi.r2V[t-2]*Nf.imV[t-2]*(rho.mV[t-2]*theta.rrV[t]+(1-rho.mV[t-2])*theta.rw[t])
+male.matureV[t]<-a.phi.r2V[t-1]*a.phi.r2V[t-2]*Nm.imV[t-2]*(rho.fV[t-2]*theta.rrV[t]+(1-rho.fV[t-2])*theta.rw[t])
+}
+for (t in 1:sim.occasions){
+Nfmat1V[t]~dpois(female.matureV[t])
+Nmmat1V[t]~dpois(male.matureV[t])
+}
+
+#Population size change with mortality
+Nfmat2V[1]<-0
+Nmmat2V[1]<-0
+for (t in 2:sim.occasions){
+Nfmat2V[t]~dbin(a.phi.r2V[t-1],NfmatV[t-1])
+Nmmat2V[t]~dbin(a.phi.r2V[t-1],NmmatV[t-1])
+}
+
+#Calcurate number of mature indViduals
+for (t in 1:sim.occasions){
+NmmatV[t]<-Nmmat1V[t]+Nmmat2V[t]
+NfmatV[t]<-Nfmat1V[t]+Nfmat2V[t]
+Nmat.femaleV[t]<-NfmatV[t]+Nwfad.juneV[t]
+NmatureV[t]<-Nwmad.juneV[t]+Nwfad.juneV[t]+Nfmat1V[t]+Nfmat2V[t]+Nmmat1V[t]+Nmmat2V[t]
+}
+
+
+
+}
+",fill = TRUE)
+sink()
+
+
+#-----------------------------------------------------------------------------------------
+#9.READING DATA AND MODEL SETTINGS
+#-----------------------------------------------------------------------------------------
+#9.1.READING DATA ##
+predict.years<-27                      #simulation duration
+CH<-read.table("cjs_released.csv", sep=",", skip=0, header=F, stringsAsFactors=F)
+CH.R <- as.matrix(CH)
+Class<-read.table("age.csv", sep=",", skip=0, header=F, stringsAsFactors=F)
+class <- as.matrix(Class)
+id<-read.table("released.csv", sep=",", skip=0, header=T, stringsAsFactors=F)
+CH.W<-read.table("cjs_wild.csv", sep=",", skip=0, header=F, stringsAsFactors=F)
+CH.W<- as.matrix(CH.W)
+Age.W<-read.table("age_wild.csv", sep=",", skip=0, header=F, stringsAsFactors=F)
+age.w <- as.matrix(Age.W)
+idw<-read.table("wild.csv", sep=",", skip=0, header=T, stringsAsFactors=F)
+n.occasions<-14
+n.season<-dim(CH.R)[2]
+nind<- dim(CH.R)[1]
+nind.w<- dim(CH.W)[1]
+get.first<-function(x)min(which(x!=0))
+o<-apply(CH.R,1,get.first)
+ow<-apply(CH.W,1,get.first)
+nest<-read.table("nest.csv", sep=",", skip=0, header=T, stringsAsFactors=F)
+n.data<- dim(nest)[1]
+sim.occasions <- n.occasions +predict.years
+
+#------------------------------------------------------------------------------------------
+#9.2 JAGS DATA FOR MODELING ##
+#Cspt:Counted population size in Septembers
+#Rf1.mar:Number of males released in Mar for Senario I
+#Rm1.mar:Number of females released in Mar for Senario I
+#Rf1.june:Number of males released in June for Senario I
+#Rm1.june:Number of females released in June for Senario I
+#Rf1.spt:Number of males released in September for Senario I
+#Rm1.spt:Number of females released in September for Senario I
+#Rf1.juneII:Number of males released in June for Senario II
+#Rm1.juneII:Number of females released in June for Senario II
+#Rf1.juneIII:Number of males released in June for Senario III
+#Rm1.juneIII:Number of females released in June for Senario III
+#Rf1.juneIV:Number of males released in June for Senario IV
+#Rm1.juneIV:Number of females released in June for Senario IV
+#Rf1.juneV:Number of males released in June for Senario V
+#Rm1.juneV:Number of females released in June for Senario V
+#n.occasions:Number of years from 2008 to 2021
+#sim.occasions:Number of years from 2008 to predict years,
+#n.season:Number of seasons from Mar 2008 to June 2021
+#y:Observation history matrix for released individuals
+#yw:Observation history matrix for wild-hatched individuals
+#nind:Number of released individuals in observation history
+#nind.w:Number of wild-hatched individuals in observation history
+#class:Matrix indicating whether the individual is newly-released or previously-released
+#age.w:Matrix indicating age class of wild-hatched individuals
+#season:Numbers to show season
+#pair:Vector for the attributes of the pair (released-released, released-wild, wild-wild)
+#s:Vector for the occasion at which the individuals were released
+#sw:Vector for the occasion at which the individuals were fledged
+#n.data:Number of nest
+#year:Vector for the year of nest observation
+#success:Vector for the year reproductive success or failure
+#sex.w:Vector for the sex of wild-hatched individuals
+#yr:Vector for the year of fledging
+
+jags.data <- list(
+Cspt=c(0,6,18,36,45,76,106,134,182,255,310,423,420),
+Rf1.mar=c(0,0,0,8,0,0,0,0,0,0,0,0,0,0,rep(0,predict.years)),
+Rm1.mar=c(0,0,0,10,0,0,0,0,0,0,0,0,0,0,rep(0,predict.years)),
+Rf1.june=c(0,0,0,0,3,4,6,4,2,10,8,6,7,13,rep(0,predict.years)),
+Rm1.june=c(0,0,0,0,10,13,11,15,16,8,11,14,11,4,rep(0,predict.years)),
+Rf1.spt=c(5,11,5,7,14,14,14,17,14,5,0,0,8,4,rep(0,predict.years)),
+Rm1.spt=c(5,8,8,11,3,3,4,2,5,14,19,17,8,10,rep(0,predict.years)),
+Rf1.juneII=c(rep(NA,13),rep(8,5),rep(0,(predict.years-4))),
+Rm1.juneII=c(rep(NA,13),rep(8,5),rep(0,(predict.years-4))),
+Rf1.sptII= c(rep(NA,13),rep(8,5),rep(0,(predict.years-4))),
+Rm1.sptII= c(rep(NA,13),rep(8,5),rep(0,(predict.years-4))),
+Rf1.juneIII=c(rep(NA,13),rep(8,10),rep(0,(predict.years-9))),
+Rm1.juneIII=c(rep(NA,13),rep(8,10),rep(0,(predict.years-9))),
+Rf1.sptIII=c(rep(NA,13),rep(8,10),rep(0,(predict.years-9))),
+Rm1.sptIII=c(rep(NA,13),rep(8,10),rep(0,(predict.years-9))),
+Rf1.juneIV=c(rep(NA,13),rep(8,15),rep(0,(predict.years-14))),
+Rm1.juneIV=c(rep(NA,13),rep(8,15),rep(0,(predict.years-14))),
+Rf1.sptIV=c(rep(NA,13),rep(8,15),rep(0,(predict.years-14))),
+Rm1.sptIV=c(rep(NA,13),rep(8,15),rep(0,(predict.years-14))),
+Rf1.juneV=c(rep(NA,13),rep(8,predict.years+1)),
+Rm1.juneV=c(rep(NA,13),rep(8,predict.years+1)),
+Rf1.sptV=c(rep(NA,13),rep(8,predict.years+1)),
+Rm1.sptV=c(rep(NA,13),rep(8,predict.years+1)),
+n.occasions = n.occasions,
+sim.occasions = sim.occasions,
+n.season= n.season,
+y= CH.R,
+yw= CH.W,
+nind = nind,
+nind.w = nind.w,
+class=class,
+age.w=age.w,
+season=rep(c(1,2,3,4),sim.occasions),
+pair=nest$pair,
+o=o,
+ow=ow,
+n.data=n.data,
+year=nest$year,
+success=nest$success,
+sex.w=idw$sex,
+yr=idw$yr
+)
+
+#------------------------------------------------------------------------------------------
+#9.3 INITIAL VALUE ##
+#function to creat initial value for CJS models developed by KERY & SCHAUB (2011)
+cjs.inits.z<-function(ch,s){
+for(i in 1:dim(ch)[1]){
+if(sum(ch[i,])==1)next
+n2<-max(which(ch[i,]==1))
+ch[i,s[i]:n2]<-NA}
+for(i in 1: dim(ch)[1]){
+ch[i,1:s[i]]<-NA}
+return(ch)}
+#initial value for latent variable z and zw
+z<-cjs.inits.z(CH.R,o)
+zw<-cjs.inits.z(CH.W,ow)
+
+#n.chains
+n.chains<-4
+
+#initial values for all parameters
+set.seed(10)
+func_init <- function(i) {
+list(
+.RNG.seed=i+0.1,
+z=z,
+zw=zw,
+mu.r= runif(1,0,1),
+mu.w= runif(1,0,1),
+mu.p= runif(1,0,1),
+mu.pw=runif(1,0,1),
+mu.rs=runif(1,0,1),
+mu.f= runif(1,0,0.1),
+mu.sr=runif(1,0,1),
+epsilon.r=matrix(nrow=2,ncol=4*sim.occasions,c(runif(8*sim.occasions,0,0.1))),
+epsilon.w=matrix(nrow=2,ncol=4*sim.occasions,c(runif(8*sim.occasions,0,0.1))),
+epsilon.p= runif(4*sim.occasions,0,0.1),
+epsilon.pw= runif(4*sim.occasions,0,0.1),
+epsilon.rs=matrix(nrow=3, ncol=sim.occasions, runif(3*sim.occasions,0,0.1)),
+epsilon.sr= runif(sim.occasions,0,0.1),
+sig.r=runif(1,0.1,1),
+sig.w=runif(1,0.1,1),
+sig.p =runif(1,0.1,1),
+sig.pw =runif(1,0.1,1),
+sig.rs=runif(1,0.1,1),
+sig.sr=runif(1,0.1,1),
+alpha1=c(NA,runif(1,0,0.1)),
+alpha2=c(NA,runif(3,0,0.1)),
+alpha3= c(NA,runif(1,0,0.1)),
+beta1=matrix(nrow=2,ncol=4,c(runif(2,0,0.1),NA,NA,runif(1,0,0.1),NA,NA,NA)),
+beta2=matrix(nrow=2,ncol=4,c(NA,NA,NA,NA,NA,NA,runif(1,0,0.1),runif(1,0,0.1))),
+beta3=c(runif(1,0,0.1),NA,NA),
+beta5=runif(1,0,0.1),
+.RNG.name="base::Mersenne-Twister")
+}
+inits <- list(func_init(1)) 
+if (n.chains > 1) {
+    for (i in 2:n.chains) {
+        set.seed(100+i)
+        inits <- append(inits, list(func_init(i)))
+ }
+}
+set.seed(1000)
+str(inits)
+
+#------------------------------------------------------------------------------------------
+#9.4 PARAMETERS FOR MONITOR ##
+monitor<-c("Nmature","Ntot.june","Nmat.female"
+　　　　　,"NmatureII","Ntot.juneII","Nmat.femaleII"
+　　　　　,"NmatureIII","Ntot.juneIII","Nmat.femaleIII"
+　　　　　,"NmatureIV","Ntot.juneIV","Nmat.femaleIV"
+　　　　　,"NmatureV","Ntot.juneV","Nmat.femaleV")
+
+#-----------------------------------------------------------------------------------------
+#9.5 RUN THE MODEL ##
+findjags()
+bpva<- run.jags(model="bpva.jags", monitor=monitor, data=jags.data,
+                            inits=inits, n.chains=n.chains,
+                            adapt=10000, burnin=100000, sample=20000, thin=20,
+                            tempdir=FALSE, method="parallel")
+save.image("./BPVA20211127.RData")
+summary(bpva)
+su3<-summary(bpva)
+plot(result)
+save.image("./BPVA.RData")
+write.csv(su3, "BPVA.csv")
+
+#-----------------------------------------------------------------------------------------
+#10. Probability
+#------------------------------------------------------------------------------------------
+#10.1 Extinction Probability
+
+S1<- as.mcmc(bpva, vars = "Nmat.female[41]")
+sum(S1 <1 , na.rm = T)/length(S1)
+
+S2<- as.mcmc(bpva, vars = "Nmat.femaleII[41]")
+sum(S2 <1 , na.rm = T)/length(S2)
+
+S3<- as.mcmc(bpva, vars = "Nmat.femaleIII[41]")
+sum(S1 <1 , na.rm = T)/length(S3)
+
+S4<- as.mcmc(bpva, vars = "Nmat.femaleIV[41]")
+sum(S4 <1 , na.rm = T)/length(S4)
+
+S5<- as.mcmc(bpva, vars = "Nmat.femaleV[41]")
+sum(S5 <1 , na.rm = T)/length(S5)
+
+
+
+#10.2 Probability to reach 500
+S6<- as.mcmc(bpva, vars = "Ntot.june[41]")
+sum(S6 >=500 , na.rm = T)/length(S6)
+
+S7<- as.mcmc(bpva, vars = "Ntot.juneII[41]")
+sum(S7 >=500 , na.rm = T)/length(S7)
+
+S8<- as.mcmc(bpva, vars = "Ntot.juneIII[41]")
+sum(S8 >=500 , na.rm = T)/length(S8)
+
+S9<- as.mcmc(bpva, vars = "Ntot.juneIV[41]")
+sum(S9 >=500 , na.rm = T)/length(S9)
+
+S10<- as.mcmc(bpva, vars = "Ntot.juneV[41]")
+sum(S10 >=500 , na.rm = T)/length(S10)
+
+
+
+
+#10.3 Probability to reach 1000
+S6<- as.mcmc(bpva, vars = "Nmature[41]")
+sum(S6 >=1000 , na.rm = T)/length(S6)
+
+S7<- as.mcmc(bpva, vars = "NmatureII[41]")
+sum(S7 >=1000 , na.rm = T)/length(S7)
+
+S8<- as.mcmc(bpva, vars = "NmatureIII[41]")
+sum(S8 >=1000 , na.rm = T)/length(S8)
+
+S9<- as.mcmc(bpva, vars = "NmatureIV[41]")
+sum(S9 >=1000 , na.rm = T)/length(S9)
+
+S10<- as.mcmc(bpva, vars = "NmatureV[41]")
+sum(S10 >=1000 , na.rm = T)/length(S10)
+
